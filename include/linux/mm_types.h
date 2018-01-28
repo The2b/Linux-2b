@@ -12,6 +12,7 @@
 #include <linux/completion.h>
 #include <linux/cpumask.h>
 #include <linux/uprobes.h>
+#include <linux/rcupdate.h>
 #include <linux/page-flags-layout.h>
 #include <linux/workqueue.h>
 
@@ -345,6 +346,9 @@ struct vm_area_struct {
 	struct mempolicy *vm_policy;	/* NUMA policy for the VMA */
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
+#ifdef CONFIG_UKSM
+	struct vma_slot *uksm_vma_slot;
+#endif
 } __randomize_layout;
 
 struct core_thread {
@@ -504,6 +508,9 @@ struct mm_struct {
 	bool tlb_flush_batched;
 #endif
 	struct uprobes_state uprobes_state;
+#ifdef CONFIG_PREEMPT_RT_BASE
+	struct rcu_head delayed_drop;
+#endif
 #ifdef CONFIG_HUGETLB_PAGE
 	atomic_long_t hugetlb_usage;
 #endif

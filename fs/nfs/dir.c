@@ -452,7 +452,7 @@ static
 void nfs_prime_dcache(struct dentry *parent, struct nfs_entry *entry)
 {
 	struct qstr filename = QSTR_INIT(entry->name, entry->len);
-	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+	DECLARE_SWAIT_QUEUE_HEAD_ONSTACK(wq);
 	struct dentry *dentry;
 	struct dentry *alias;
 	struct inode *dir = d_inode(parent);
@@ -1241,8 +1241,7 @@ static int nfs_weak_revalidate(struct dentry *dentry, unsigned int flags)
 		return 0;
 	}
 
-	if (nfs_mapping_need_revalidate_inode(inode))
-		error = __nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	error = nfs_lookup_verify_inode(inode, flags);
 	dfprintk(LOOKUPCACHE, "NFS: %s: inode %lu is %s\n",
 			__func__, inode->i_ino, error ? "invalid" : "valid");
 	return !error;
@@ -1393,6 +1392,7 @@ static int nfs4_lookup_revalidate(struct dentry *, unsigned int);
 
 const struct dentry_operations nfs4_dentry_operations = {
 	.d_revalidate	= nfs4_lookup_revalidate,
+	.d_weak_revalidate	= nfs_weak_revalidate,
 	.d_delete	= nfs_dentry_delete,
 	.d_iput		= nfs_dentry_iput,
 	.d_automount	= nfs_d_automount,
@@ -1443,7 +1443,7 @@ int nfs_atomic_open(struct inode *dir, struct dentry *dentry,
 		    struct file *file, unsigned open_flags,
 		    umode_t mode, int *opened)
 {
-	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+	DECLARE_SWAIT_QUEUE_HEAD_ONSTACK(wq);
 	struct nfs_open_context *ctx;
 	struct dentry *res;
 	struct iattr attr = { .ia_valid = ATTR_OPEN };
@@ -1763,7 +1763,11 @@ int nfs_rmdir(struct inode *dir, struct dentry *dentry)
 
 	trace_nfs_rmdir_enter(dir, dentry);
 	if (d_really_is_positive(dentry)) {
+#ifdef CONFIG_PREEMPT_RT_BASE
+		down(&NFS_I(d_inode(dentry))->rmdir_sem);
+#else
 		down_write(&NFS_I(d_inode(dentry))->rmdir_sem);
+#endif
 		error = NFS_PROTO(dir)->rmdir(dir, &dentry->d_name);
 		/* Ensure the VFS deletes this inode */
 		switch (error) {
@@ -1773,7 +1777,11 @@ int nfs_rmdir(struct inode *dir, struct dentry *dentry)
 		case -ENOENT:
 			nfs_dentry_handle_enoent(dentry);
 		}
+#ifdef CONFIG_PREEMPT_RT_BASE
+		up(&NFS_I(d_inode(dentry))->rmdir_sem);
+#else
 		up_write(&NFS_I(d_inode(dentry))->rmdir_sem);
+#endif
 	} else
 		error = NFS_PROTO(dir)->rmdir(dir, &dentry->d_name);
 	trace_nfs_rmdir_exit(dir, dentry, error);
@@ -2064,7 +2072,7 @@ out:
 		 * should mark the directories for revalidation.
 		 */
 		d_move(old_dentry, new_dentry);
-		nfs_set_verifier(new_dentry,
+		nfs_set_verifier(old_dentry,
 					nfs_save_change_attribute(new_dir));
 	} else if (error == -ENOENT)
 		nfs_dentry_handle_enoent(old_dentry);

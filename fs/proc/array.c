@@ -361,9 +361,9 @@ static inline void task_context_switch_counts(struct seq_file *m,
 static void task_cpus_allowed(struct seq_file *m, struct task_struct *task)
 {
 	seq_printf(m, "Cpus_allowed:\t%*pb\n",
-		   cpumask_pr_args(&task->cpus_allowed));
+		   cpumask_pr_args(task->cpus_ptr));
 	seq_printf(m, "Cpus_allowed_list:\t%*pbl\n",
-		   cpumask_pr_args(&task->cpus_allowed));
+		   cpumask_pr_args(task->cpus_ptr));
 }
 
 int proc_pid_status(struct seq_file *m, struct pid_namespace *ns,
@@ -424,8 +424,11 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 		 * safe because the task has stopped executing permanently.
 		 */
 		if (permitted && (task->flags & PF_DUMPCORE)) {
-			eip = KSTK_EIP(task);
-			esp = KSTK_ESP(task);
+			if (try_get_task_stack(task)) {
+				eip = KSTK_EIP(task);
+				esp = KSTK_ESP(task);
+				put_task_stack(task);
+			}
 		}
 	}
 

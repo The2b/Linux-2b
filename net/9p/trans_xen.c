@@ -38,7 +38,6 @@
 
 #include <linux/module.h>
 #include <linux/spinlock.h>
-#include <linux/rwlock.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 #include <net/9p/transport.h>
@@ -156,8 +155,8 @@ static int p9_xen_request(struct p9_client *client, struct p9_req_t *p9_req)
 	ring = &priv->rings[num];
 
 again:
-	while (wait_event_interruptible(ring->wq,
-					p9_xen_write_todo(ring, size)) != 0)
+	while (wait_event_killable(ring->wq,
+				   p9_xen_write_todo(ring, size)) != 0)
 		;
 
 	spin_lock_irqsave(&ring->lock, flags);

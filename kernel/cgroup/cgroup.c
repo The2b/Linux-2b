@@ -4059,26 +4059,24 @@ static void css_task_iter_advance_css_set(struct css_task_iter *it)
 
 static void css_task_iter_advance(struct css_task_iter *it)
 {
-	struct list_head *l = it->task_pos;
+	struct list_head *next;
 
 	lockdep_assert_held(&css_set_lock);
-	WARN_ON_ONCE(!l);
-
 repeat:
 	/*
 	 * Advance iterator to find next entry.  cset->tasks is consumed
 	 * first and then ->mg_tasks.  After ->mg_tasks, we move onto the
 	 * next cset.
 	 */
-	l = l->next;
+	next = it->task_pos->next;
 
-	if (l == it->tasks_head)
-		l = it->mg_tasks_head->next;
+	if (next == it->tasks_head)
+		next = it->mg_tasks_head->next;
 
-	if (l == it->mg_tasks_head)
+	if (next == it->mg_tasks_head)
 		css_task_iter_advance_css_set(it);
 	else
-		it->task_pos = l;
+		it->task_pos = next;
 
 	/* if PROCS, skip over tasks which aren't group leaders */
 	if ((it->flags & CSS_TASK_ITER_PROCS) && it->task_pos &&
@@ -4500,10 +4498,10 @@ static void css_free_rcu_fn(struct rcu_head *rcu_head)
 	queue_work(cgroup_destroy_wq, &css->destroy_work);
 }
 
-static void css_release_work_fn(struct work_struct *work)
+static void css_release_work_fn(struct swork_event *sev)
 {
 	struct cgroup_subsys_state *css =
-		container_of(work, struct cgroup_subsys_state, destroy_work);
+		container_of(sev, struct cgroup_subsys_state, destroy_swork);
 	struct cgroup_subsys *ss = css->ss;
 	struct cgroup *cgrp = css->cgroup;
 
@@ -4554,8 +4552,8 @@ static void css_release(struct percpu_ref *ref)
 	struct cgroup_subsys_state *css =
 		container_of(ref, struct cgroup_subsys_state, refcnt);
 
-	INIT_WORK(&css->destroy_work, css_release_work_fn);
-	queue_work(cgroup_destroy_wq, &css->destroy_work);
+	INIT_SWORK(&css->destroy_swork, css_release_work_fn);
+	swork_queue(&css->destroy_swork);
 }
 
 static void init_and_link_css(struct cgroup_subsys_state *css,
@@ -5261,6 +5259,7 @@ static int __init cgroup_wq_init(void)
 	 */
 	cgroup_destroy_wq = alloc_workqueue("cgroup_destroy", 0, 1);
 	BUG_ON(!cgroup_destroy_wq);
+	BUG_ON(swork_get());
 	return 0;
 }
 core_initcall(cgroup_wq_init);

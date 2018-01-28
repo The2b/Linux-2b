@@ -213,7 +213,7 @@ extern void add_timer(struct timer_list *timer);
 
 extern int try_to_del_timer_sync(struct timer_list *timer);
 
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) || defined(CONFIG_PREEMPT_RT_FULL)
   extern int del_timer_sync(struct timer_list *timer);
 #else
 # define del_timer_sync(t)		del_timer(t)
@@ -246,9 +246,11 @@ unsigned long round_jiffies_up(unsigned long j);
 unsigned long round_jiffies_up_relative(unsigned long j);
 
 #ifdef CONFIG_HOTPLUG_CPU
+int timers_prepare_cpu(unsigned int cpu);
 int timers_dead_cpu(unsigned int cpu);
 #else
-#define timers_dead_cpu NULL
+#define timers_prepare_cpu	NULL
+#define timers_dead_cpu		NULL
 #endif
 
 #endif

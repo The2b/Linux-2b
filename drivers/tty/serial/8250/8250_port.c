@@ -35,6 +35,7 @@
 #include <linux/nmi.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#include <linux/kdb.h>
 #include <linux/uaccess.h>
 #include <linux/pm_runtime.h>
 #include <linux/ktime.h>
@@ -2586,8 +2587,11 @@ static void serial8250_set_divisor(struct uart_port *port, unsigned int baud,
 	serial_dl_write(up, quot);
 
 	/* XR17V35x UARTs have an extra fractional divisor register (DLD) */
-	if (up->port.type == PORT_XR17V35X)
+	if (up->port.type == PORT_XR17V35X) {
+		/* Preserve bits not related to baudrate; DLD[7:4]. */
+		quot_frac |= serial_port_in(port, 0x2) & 0xf0;
 		serial_port_out(port, 0x2, quot_frac);
+	}
 }
 
 static unsigned int serial8250_get_baud_rate(struct uart_port *port,
@@ -3214,9 +3218,9 @@ void serial8250_console_write(struct uart_8250_port *up, const char *s,
 
 	serial8250_rpm_get(up);
 
-	if (port->sysrq)
+	if (port->sysrq || oops_in_progress)
 		locked = 0;
-	else if (oops_in_progress)
+	else if (in_kdb_printk())
 		locked = spin_trylock_irqsave(&port->lock, flags);
 	else
 		spin_lock_irqsave(&port->lock, flags);

@@ -350,7 +350,7 @@ poll_again:
 			}
 			kdb_printf("\n");
 			for (i = 0; i < count; i++) {
-				if (kallsyms_symbol_next(p_tmp, i) < 0)
+				if (WARN_ON(!kallsyms_symbol_next(p_tmp, i)))
 					break;
 				kdb_printf("%s ", p_tmp);
 				*(p_tmp + len) = '\0';
@@ -854,9 +854,11 @@ int kdb_printf(const char *fmt, ...)
 	va_list ap;
 	int r;
 
+	kdb_trap_printk++;
 	va_start(ap, fmt);
 	r = vkdb_printf(KDB_MSGSRC_INTERNAL, fmt, ap);
 	va_end(ap);
+	kdb_trap_printk--;
 
 	return r;
 }

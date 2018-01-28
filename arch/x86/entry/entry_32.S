@@ -44,6 +44,7 @@
 #include <asm/asm.h>
 #include <asm/smap.h>
 #include <asm/frame.h>
+#include <asm/nospec-branch.h>
 
 	.section .entry.text, "ax"
 
@@ -243,6 +244,17 @@ ENTRY(__switch_to_asm)
 	movl	%ebx, PER_CPU_VAR(stack_canary)+stack_canary_offset
 #endif
 
+#ifdef CONFIG_RETPOLINE
+	/*
+	 * When switching from a shallower to a deeper call stack
+	 * the RSB may either underflow or use entries populated
+	 * with userspace addresses. On CPUs where those concerns
+	 * exist, overwrite the RSB with entries which capture
+	 * speculative execution to prevent attack.
+	 */
+	FILL_RETURN_BUFFER %ebx, RSB_CLEAR_LOOPS, X86_FEATURE_RSB_CTXSW
+#endif
+
 	/* restore callee-saved registers */
 	popl	%esi
 	popl	%edi
@@ -290,7 +302,7 @@ ENTRY(ret_from_fork)
 
 	/* kernel thread */
 1:	movl	%edi, %eax
-	call	*%ebx
+	CALL_NOSPEC %ebx
 	/*
 	 * A kernel thread is allowed to return here after successfully
 	 * calling do_execve().  Exit to userspace to complete the execve()
@@ -338,8 +350,25 @@ END(ret_from_exception)
 ENTRY(resume_kernel)
 	DISABLE_INTERRUPTS(CLBR_ANY)
 .Lneed_resched:
+	# preempt count == 0 + NEED_RS set?
 	cmpl	$0, PER_CPU_VAR(__preempt_count)
+#ifndef CONFIG_PREEMPT_LAZY
 	jnz	restore_all
+#else
+	jz test_int_off
+
+	# atleast preempt count == 0 ?
+	cmpl $_PREEMPT_ENABLED,PER_CPU_VAR(__preempt_count)
+	jne restore_all
+
+	movl	PER_CPU_VAR(current_task), %ebp
+	cmpl	$0,TASK_TI_preempt_lazy_count(%ebp)	# non-zero preempt_lazy_count ?
+	jnz	restore_all
+
+	testl	$_TIF_NEED_RESCHED_LAZY, TASK_TI_flags(%ebp)
+	jz	restore_all
+test_int_off:
+#endif
 	testl	$X86_EFLAGS_IF, PT_EFLAGS(%esp)	# interrupts off (exception path) ?
 	jz	restore_all
 	call	preempt_schedule_irq
@@ -919,7 +948,7 @@ common_exception:
 	movl	%ecx, %es
 	TRACE_IRQS_OFF
 	movl	%esp, %eax			# pt_regs pointer
-	call	*%edi
+	CALL_NOSPEC %edi
 	jmp	ret_from_exception
 END(common_exception)
 
@@ -941,9 +970,10 @@ ENTRY(debug)
 	movl	%esp, %eax			# pt_regs pointer
 
 	/* Are we currently on the SYSENTER stack? */
-	PER_CPU(cpu_tss + CPU_TSS_SYSENTER_stack + SIZEOF_SYSENTER_stack, %ecx)
-	subl	%eax, %ecx	/* ecx = (end of SYSENTER_stack) - esp */
-	cmpl	$SIZEOF_SYSENTER_stack, %ecx
+	movl	PER_CPU_VAR(cpu_entry_area), %ecx
+	addl	$CPU_ENTRY_AREA_entry_stack + SIZEOF_entry_stack, %ecx
+	subl	%eax, %ecx	/* ecx = (end of entry_stack) - esp */
+	cmpl	$SIZEOF_entry_stack, %ecx
 	jb	.Ldebug_from_sysenter_stack
 
 	TRACE_IRQS_OFF
@@ -984,9 +1014,10 @@ ENTRY(nmi)
 	movl	%esp, %eax			# pt_regs pointer
 
 	/* Are we currently on the SYSENTER stack? */
-	PER_CPU(cpu_tss + CPU_TSS_SYSENTER_stack + SIZEOF_SYSENTER_stack, %ecx)
-	subl	%eax, %ecx	/* ecx = (end of SYSENTER_stack) - esp */
-	cmpl	$SIZEOF_SYSENTER_stack, %ecx
+	movl	PER_CPU_VAR(cpu_entry_area), %ecx
+	addl	$CPU_ENTRY_AREA_entry_stack + SIZEOF_entry_stack, %ecx
+	subl	%eax, %ecx	/* ecx = (end of entry_stack) - esp */
+	cmpl	$SIZEOF_entry_stack, %ecx
 	jb	.Lnmi_from_sysenter_stack
 
 	/* Not on SYSENTER stack. */

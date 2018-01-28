@@ -31,6 +31,7 @@
 
 	.text
 
+#ifndef CONFIG_PREEMPT_RT_FULL
 _GLOBAL(call_do_softirq)
 	mflr	r0
 	std	r0,16(r1)
@@ -41,6 +42,7 @@ _GLOBAL(call_do_softirq)
 	ld	r0,16(r1)
 	mtlr	r0
 	blr
+#endif
 
 _GLOBAL(call_do_irq)
 	mflr	r0
@@ -623,7 +625,9 @@ BEGIN_FTR_SECTION
 	 * NOTE, we rely on r0 being 0 from above.
 	 */
 	mtspr	SPRN_IAMR,r0
+BEGIN_FTR_SECTION_NESTED(42)
 	mtspr	SPRN_AMOR,r0
+END_FTR_SECTION_NESTED_IFSET(CPU_FTR_HVMODE, 42)
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 
 	/* save regs for local vars on new stack.

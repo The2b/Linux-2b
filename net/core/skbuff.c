@@ -64,6 +64,7 @@
 #include <linux/errqueue.h>
 #include <linux/prefetch.h>
 #include <linux/if_vlan.h>
+#include <linux/locallock.h>
 
 #include <net/protocol.h>
 #include <net/dst.h>
@@ -334,6 +335,8 @@ struct napi_alloc_cache {
 
 static DEFINE_PER_CPU(struct page_frag_cache, netdev_alloc_cache);
 static DEFINE_PER_CPU(struct napi_alloc_cache, napi_alloc_cache);
+static DEFINE_LOCAL_IRQ_LOCK(netdev_alloc_lock);
+static DEFINE_LOCAL_IRQ_LOCK(napi_alloc_cache_lock);
 
 static void *__netdev_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
 {
@@ -341,10 +344,10 @@ static void *__netdev_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
 	unsigned long flags;
 	void *data;
 
-	local_irq_save(flags);
+	local_lock_irqsave(netdev_alloc_lock, flags);
 	nc = this_cpu_ptr(&netdev_alloc_cache);
 	data = page_frag_alloc(nc, fragsz, gfp_mask);
-	local_irq_restore(flags);
+	local_unlock_irqrestore(netdev_alloc_lock, flags);
 	return data;
 }
 
@@ -363,9 +366,13 @@ EXPORT_SYMBOL(netdev_alloc_frag);
 
 static void *__napi_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
 {
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
+	struct napi_alloc_cache *nc;
+	void *data;
 
-	return page_frag_alloc(&nc->page, fragsz, gfp_mask);
+	nc = &get_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
+	data =  page_frag_alloc(&nc->page, fragsz, gfp_mask);
+	put_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
+	return data;
 }
 
 void *napi_alloc_frag(unsigned int fragsz)
@@ -412,13 +419,13 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev, unsigned int len,
 	if (sk_memalloc_socks())
 		gfp_mask |= __GFP_MEMALLOC;
 
-	local_irq_save(flags);
+	local_lock_irqsave(netdev_alloc_lock, flags);
 
 	nc = this_cpu_ptr(&netdev_alloc_cache);
 	data = page_frag_alloc(nc, len, gfp_mask);
 	pfmemalloc = nc->pfmemalloc;
 
-	local_irq_restore(flags);
+	local_unlock_irqrestore(netdev_alloc_lock, flags);
 
 	if (unlikely(!data))
 		return NULL;
@@ -459,9 +466,10 @@ EXPORT_SYMBOL(__netdev_alloc_skb);
 struct sk_buff *__napi_alloc_skb(struct napi_struct *napi, unsigned int len,
 				 gfp_t gfp_mask)
 {
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
+	struct napi_alloc_cache *nc;
 	struct sk_buff *skb;
 	void *data;
+	bool pfmemalloc;
 
 	len += NET_SKB_PAD + NET_IP_ALIGN;
 
@@ -479,7 +487,10 @@ struct sk_buff *__napi_alloc_skb(struct napi_struct *napi, unsigned int len,
 	if (sk_memalloc_socks())
 		gfp_mask |= __GFP_MEMALLOC;
 
+	nc = &get_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
 	data = page_frag_alloc(&nc->page, len, gfp_mask);
+	pfmemalloc = nc->page.pfmemalloc;
+	put_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
 	if (unlikely(!data))
 		return NULL;
 
@@ -490,7 +501,7 @@ struct sk_buff *__napi_alloc_skb(struct napi_struct *napi, unsigned int len,
 	}
 
 	/* use OR instead of assignment to avoid clearing of bits in mask */
-	if (nc->page.pfmemalloc)
+	if (pfmemalloc)
 		skb->pfmemalloc = 1;
 	skb->head_frag = 1;
 
@@ -722,23 +733,26 @@ void __consume_stateless_skb(struct sk_buff *skb)
 
 void __kfree_skb_flush(void)
 {
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
+	struct napi_alloc_cache *nc;
 
+	nc = &get_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
 	/* flush skb_cache if containing objects */
 	if (nc->skb_count) {
 		kmem_cache_free_bulk(skbuff_head_cache, nc->skb_count,
 				     nc->skb_cache);
 		nc->skb_count = 0;
 	}
+	put_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
 }
 
 static inline void _kfree_skb_defer(struct sk_buff *skb)
 {
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
+	struct napi_alloc_cache *nc;
 
 	/* drop skb->head and call any destructors for packet */
 	skb_release_all(skb);
 
+	nc = &get_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
 	/* record skb to CPU local list */
 	nc->skb_cache[nc->skb_count++] = skb;
 
@@ -753,6 +767,7 @@ static inline void _kfree_skb_defer(struct sk_buff *skb)
 				     nc->skb_cache);
 		nc->skb_count = 0;
 	}
+	put_locked_var(napi_alloc_cache_lock, napi_alloc_cache);
 }
 void __kfree_skb_defer(struct sk_buff *skb)
 {
@@ -1181,11 +1196,11 @@ int skb_copy_ubufs(struct sk_buff *skb, gfp_t gfp_mask)
 	int i, new_frags;
 	u32 d_off;
 
-	if (!num_frags)
-		return 0;
-
 	if (skb_shared(skb) || skb_unclone(skb, gfp_mask))
 		return -EINVAL;
+
+	if (!num_frags)
+		goto release;
 
 	new_frags = (__skb_pagelen(skb) + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	for (i = 0; i < new_frags; i++) {
@@ -1242,6 +1257,7 @@ int skb_copy_ubufs(struct sk_buff *skb, gfp_t gfp_mask)
 	__skb_fill_page_desc(skb, new_frags - 1, head, 0, d_off);
 	skb_shinfo(skb)->nr_frags = new_frags;
 
+release:
 	skb_zcopy_clear(skb, false);
 	return 0;
 }
@@ -3657,8 +3673,6 @@ normal:
 
 		skb_shinfo(nskb)->tx_flags |= skb_shinfo(head_skb)->tx_flags &
 					      SKBTX_SHARED_FRAG;
-		if (skb_zerocopy_clone(nskb, head_skb, GFP_ATOMIC))
-			goto err;
 
 		while (pos < offset + len) {
 			if (i >= nfrags) {
@@ -3683,6 +3697,8 @@ normal:
 			}
 
 			if (unlikely(skb_orphan_frags(frag_skb, GFP_ATOMIC)))
+				goto err;
+			if (skb_zerocopy_clone(nskb, frag_skb, GFP_ATOMIC))
 				goto err;
 
 			*nskb_frag = *frag;
@@ -4296,7 +4312,7 @@ void skb_complete_tx_timestamp(struct sk_buff *skb,
 	struct sock *sk = skb->sk;
 
 	if (!skb_may_tx_timestamp(sk, false))
-		return;
+		goto err;
 
 	/* Take a reference to prevent skb_orphan() from freeing the socket,
 	 * but only if the socket refcount is not zero.
@@ -4305,7 +4321,11 @@ void skb_complete_tx_timestamp(struct sk_buff *skb,
 		*skb_hwtstamps(skb) = *hwtstamps;
 		__skb_complete_tx_timestamp(skb, sk, SCM_TSTAMP_SND, false);
 		sock_put(sk);
+		return;
 	}
+
+err:
+	kfree_skb(skb);
 }
 EXPORT_SYMBOL_GPL(skb_complete_tx_timestamp);
 
