@@ -239,7 +239,7 @@ extern struct cred init_cred;
 	.prio		= MAX_PRIO-20,					\
 	.static_prio	= MAX_PRIO-20,					\
 	.normal_prio	= MAX_PRIO-20,					\
-	.policy		= SCHED_NORMAL,					\
+	.policy		= SCHED_RR,					\
 	.cpus_ptr	= &tsk.cpus_mask,				\
 	.cpus_mask	= CPU_MASK_ALL,					\
 	.nr_cpus_allowed= NR_CPUS,					\
