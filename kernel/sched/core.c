@@ -2433,15 +2433,15 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 
 	/**
 	 * @author Thomas Lenz <thomas.lenz96@gmail.com> AS The2b
-	 * @purpose Change the default scheduler of processes to Round Robin
+	 * @purpose Change process to Round Robin and default priority when forking, if requested
 	 */
 #ifdef CONFIG_SCHED_RR
 	if(unlikely(p->sched_reset_on_fork)) {
+		p->prio = (MAX_RT_PRIO/2);
+		p->static_prio = NICE_TO_PRIO(0); // Since this is giving me issues, let's just set it to nice 0
+		p->rt_priority = (MAX_RT_PRIO/2);
+		p->normal_prio = NICE_TO_PRIO(0);
 		p->policy = SCHED_RR;
-		p->prio = current->normal_prio - NICE_WIDTH - PRIO_TO_NICE(current->static_prio);
-		p->normal_prio = __normal_prio(p);
-		p->rt_priority = p->prio;
-		p->static_prio = NICE_TO_PRIO(0);
 	}
 
 	p->sched_reset_on_fork = 0;
@@ -4395,18 +4395,6 @@ static int _sched_setscheduler(struct task_struct *p, int policy,
 		.sched_priority = param->sched_priority,
 		.sched_nice	= PRIO_TO_NICE(p->static_prio),
 	};
-
-	/**
-	 * @author Thomas Lenz <thomas.lenz96@gmail.com AS The2b
-	 * @purpose Force the use of the Round Robin scheduler if CFS would normally be used
-	 *
-#ifdef CONFIG_SCHED_RR
-	if(attr.sched_policy == SCHED_RR) {
-		attr.sched_priority = param->sched_priority - NICE_WIDTH - attr.sched_nice;
-		attr.sched_policy = SCHED_RR;
-	}
-#endif
-	*/
 
 	/* Fixup the legacy SCHED_RESET_ON_FORK hack. */
 	if ((policy != SETPARAM_POLICY) && (policy & SCHED_RESET_ON_FORK)) {
