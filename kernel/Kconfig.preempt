@@ -98,11 +98,10 @@ config SCHED_RR
 	bool "Round Robin Scheduler (RR)"
 	depends on PREEMPT_RT_BASE || PREEMPT_RT_FULL
 	help
-	  Use the round robin scheduler, a real-time scheduler, in place of CFS. This is pretty hacky, and replaces
-	  all calls to use CFS, whether by default when a program (well, just init) starts, inheirited by the parent,
-	  or manually using setscheduler() and chrt. In other words, this fully replaces CFS with RR. Only use this
-	  if you are using a real-time kernel AND you notice issues due to CFS (usually missed dealines due to non-real-time
-	  processes having too much time saved up). If in doubt, use CFS.
+	  Use the round robin scheduler, a real-time scheduler, in place of CFS. CFS will still be available
+	  for usage as normal, should you choose to change it on a process-by-process basis. Only use this if
+	  you are using a real-time kernel AND you notice issues due to CFS (usually missed dealines due to
+	  non-real-time processes having too much time saved up). If in doubt, use CFS.
 
 endchoice
 
