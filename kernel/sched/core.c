@@ -4396,17 +4396,6 @@ static int _sched_setscheduler(struct task_struct *p, int policy,
 		.sched_nice	= PRIO_TO_NICE(p->static_prio),
 	};
 
-	/**
-	 * @author Thomas Lenz <thomas.lenz96@gmail.com AS The2b
-	 * @purpose Force the use of the Round Robin scheduler if CFS would normally be used
-	 */
-#ifdef CONFIG_SCHED_RR
-	if(attr.sched_policy == SCHED_NORMAL) {
-		attr.sched_priority = param->sched_priority - NICE_WIDTH - attr.sched_nice;
-		attr.sched_policy = SCHED_RR;
-	}
-#endif
-
 	/* Fixup the legacy SCHED_RESET_ON_FORK hack. */
 	if ((policy != SETPARAM_POLICY) && (policy & SCHED_RESET_ON_FORK)) {
 		attr.sched_flags |= SCHED_FLAG_RESET_ON_FORK;

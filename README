@@ -3,6 +3,9 @@ Linux-2b Patchset
 
 This repository contains the linux kernel with a custom patchset.
 
+The base linux kernel can be found here:
+	https://github.com/torvalds/linux
+
 The following patchsets are applied to this kernel:
 
 	CONFIG_PREEMPT_RT patch, under the GNU Public License Version 2
