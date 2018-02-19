@@ -1,18 +1,25 @@
-Linux kernel
+Linux-2b Patchset
 ============
 
-This file was moved to Documentation/admin-guide/README.rst
+This repository contains the linux kernel with a custom patchset.
 
-Please notice that there are several guides for kernel developers and users.
-These guides can be rendered in a number of formats, like HTML and PDF.
+The base linux kernel can be found here:
+	https://github.com/torvalds/linux
 
-In order to build the documentation, use ``make htmldocs`` or
-``make pdfdocs``.
+The following patchsets are applied to this kernel:
 
-There are various text files in the Documentation/ subdirectory,
-several of them using the Restructured Text markup notation.
-See Documentation/00-INDEX for a list of what is contained in each file.
+	CONFIG_PREEMPT_RT patch, under the GNU Public License Version 2
+		https://www.kernel.org/pub/linux/kernel/projects/rt/
 
-Please read the Documentation/process/changes.rst file, as it contains the
-requirements for building and running the kernel, and information about
-the problems which may result by upgrading your kernel.
+	Ultra Kernel Samepage Merging, under the GNU Public License Version 2
+		https://github.com/dolohow/uksm
+
+	GCC CPU Optimization Kernel Patch, under the GNU Public License Version 2
+		https://github.com/graysky2/kernel_gcc_patch.git
+
+	Linux Round Robin Scheduler, under the GNU Public License Version 2
+		https://github.com/The2b/Linux-Round-Robin-Scheduler-Patch
+
+The fully patched kernel is distributed under the same GPL v2 License all its respective componenets are.
+
+By using this kernel, one agrees that all liability is put on the end user, and zero liability is placed on the developers who created each patch, nor the individual who curated the patches. Any legal responsibility for consequences of this patchset regarding, but not limited to, physical damages, loss of data, corruption of data, or just about anything else, will have this agreement noted. By using this patchset, one also agrees to everything listed in the individual component patches' agreements.

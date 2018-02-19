@@ -83,5 +83,27 @@ config PREEMPT_RT_FULL
 
 endchoice
 
+choice
+	prompt "Default Scheduler"
+	default SCHED_NORMAL
+	help
+	  The default scheduler to use. Currently only supports CFS and RR. If in doubt, select CFS.
+
+config SCHED_NORMAL
+	bool "Completely Fair Scheduler (CFS)"
+	help
+	  Linux's default scheduler; Select this if you are not using a real-time kernel
+
+config SCHED_RR
+	bool "Round Robin Scheduler (RR)"
+	depends on PREEMPT_RT_BASE || PREEMPT_RT_FULL
+	help
+	  Use the round robin scheduler, a real-time scheduler, in place of CFS. CFS will still be available
+	  for usage as normal, should you choose to change it on a process-by-process basis. Only use this if
+	  you are using a real-time kernel AND you notice issues due to CFS (usually missed dealines due to
+	  non-real-time processes having too much time saved up). If in doubt, use CFS.
+
+endchoice
+
 config PREEMPT_COUNT
        bool

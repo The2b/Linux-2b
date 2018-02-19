@@ -2424,11 +2424,30 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 */
 	p->state = TASK_NEW;
 
+#ifdef CONFIG_SCHED_NORMAL
 	/*
 	 * Make sure we do not leak PI boosting priority to the child.
 	 */
 	p->prio = current->normal_prio;
+#endif
 
+	/**
+	 * @author Thomas Lenz <thomas.lenz96@gmail.com> AS The2b
+	 * @purpose Change process to Round Robin and default priority when forking, if requested
+	 */
+#ifdef CONFIG_SCHED_RR
+	if(unlikely(p->sched_reset_on_fork)) {
+		p->prio = (MAX_RT_PRIO/2);
+		p->static_prio = NICE_TO_PRIO(0); // Since this is giving me issues, let's just set it to nice 0
+		p->rt_priority = (MAX_RT_PRIO/2);
+		p->normal_prio = NICE_TO_PRIO(0);
+		p->policy = SCHED_RR;
+	}
+
+	p->sched_reset_on_fork = 0;
+#endif
+
+#ifdef CONFIG_SCHED_NORMAL
 	/*
 	 * Revert to default priority/policy on fork if requested.
 	 */
@@ -2449,6 +2468,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		 */
 		p->sched_reset_on_fork = 0;
 	}
+#endif
 
 	if (dl_prio(p->prio)) {
 		put_cpu();
