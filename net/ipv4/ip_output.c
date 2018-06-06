@@ -248,7 +248,7 @@ static int ip_finish_output_gso(struct net *net, struct sock *sk,
 
 	/* common case: seglen is <= mtu
 	 */
-	if (skb_gso_validate_mtu(skb, mtu))
+	if (skb_gso_validate_network_len(skb, mtu))
 		return ip_finish_output2(net, sk, skb);
 
 	/* Slowpath -  GSO segment length exceeds the egress MTU.
@@ -1040,7 +1040,8 @@ alloc_new_skb:
 		if (copy > length)
 			copy = length;
 
-		if (!(rt->dst.dev->features&NETIF_F_SG)) {
+		if (!(rt->dst.dev->features&NETIF_F_SG) &&
+		    skb_tailroom(skb) >= copy) {
 			unsigned int off;
 
 			off = skb->len;

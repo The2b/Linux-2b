@@ -232,13 +232,11 @@ void ide_pio_bytes(ide_drive_t *drive, struct ide_cmd *cmd,
 	unsigned int offset;
 	u8 *buf;
 
-	cursg = cmd->cursg;
 	if (cursg == NULL)
 		cursg = cmd->cursg = sg;
 
 	while (len) {
 		unsigned nr_bytes = min(len, cursg->length - cmd->cursg_ofs);
-		int page_is_high;
 
 		page = sg_page(cursg);
 		offset = cursg->offset + cmd->cursg_ofs;
@@ -248,10 +246,6 @@ void ide_pio_bytes(ide_drive_t *drive, struct ide_cmd *cmd,
 		offset %= PAGE_SIZE;
 
 		nr_bytes = min_t(unsigned, nr_bytes, (PAGE_SIZE - offset));
-
-		page_is_high = PageHighMem(page);
-		if (page_is_high)
-			local_irq_save_nort(flags);
 
 		buf = kmap_atomic(page) + offset;
 
@@ -270,9 +264,6 @@ void ide_pio_bytes(ide_drive_t *drive, struct ide_cmd *cmd,
 			hwif->tp_ops->input_data(drive, cmd, buf, nr_bytes);
 
 		kunmap_atomic(buf);
-
-		if (page_is_high)
-			local_irq_restore_nort(flags);
 
 		len -= nr_bytes;
 	}
@@ -414,8 +405,8 @@ static ide_startstop_t pre_task_out_intr(ide_drive_t *drive,
 		return startstop;
 	}
 
-	if ((drive->dev_flags & IDE_DFLAG_UNMASK) == 0)
-		local_irq_disable_nort();
+	if (!force_irqthreads && (drive->dev_flags & IDE_DFLAG_UNMASK) == 0)
+		local_irq_disable();
 
 	ide_set_handler(drive, &task_pio_intr, WAIT_WORSTCASE);
 

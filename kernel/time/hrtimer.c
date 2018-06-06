@@ -37,7 +37,6 @@
 #include <linux/hrtimer.h>
 #include <linux/notifier.h>
 #include <linux/syscalls.h>
-#include <linux/kallsyms.h>
 #include <linux/interrupt.h>
 #include <linux/tick.h>
 #include <linux/seq_file.h>
@@ -205,7 +204,7 @@ struct hrtimer_cpu_base *get_target_base(struct hrtimer_cpu_base *base,
 					 int pinned)
 {
 #if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON)
-	if (static_branch_unlikely(&timers_migration_enabled) && !pinned)
+	if (static_branch_likely(&timers_migration_enabled) && !pinned)
 		return &per_cpu(hrtimer_bases, get_nohz_timer_target());
 #endif
 	return base;
@@ -880,9 +879,7 @@ void clock_was_set(void)
  */
 void hrtimers_resume(void)
 {
-	WARN_ONCE(!irqs_disabled(),
-		  KERN_INFO "hrtimers_resume() called with IRQs enabled!");
-
+	lockdep_assert_irqs_disabled();
 	/* Retrigger on the local CPU */
 	retrigger_next_event(NULL);
 	/* And schedule a retrigger for all others */
@@ -1291,9 +1288,9 @@ static void __hrtimer_init(struct hrtimer *timer, clockid_t clock_id,
 	cpu_base = raw_cpu_ptr(&hrtimer_bases);
 
 	/*
-	 * Posix magic: Relative CLOCK_REALTIME timers are not affected by
+	 * POSIX magic: Relative CLOCK_REALTIME timers are not affected by
 	 * clock modifications, so they needs to become CLOCK_MONOTONIC to
-	 * ensure Posix compliance.
+	 * ensure POSIX compliance.
 	 */
 	if (clock_id == CLOCK_REALTIME && mode & HRTIMER_MODE_REL)
 		clock_id = CLOCK_MONOTONIC;
@@ -1403,7 +1400,7 @@ static void __run_hrtimer(struct hrtimer_cpu_base *cpu_base,
 		timer->is_rel = false;
 
 	/*
-	 * The timer is marked as running in the cpu base, so it is
+	 * The timer is marked as running in the CPU base, so it is
 	 * protected against migration to a different CPU even if the lock
 	 * is dropped.
 	 */
@@ -1664,19 +1661,6 @@ static enum hrtimer_restart hrtimer_wakeup(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-#ifdef CONFIG_PREEMPT_RT_FULL
-static bool task_is_realtime(struct task_struct *tsk)
-{
-	int policy = tsk->policy;
-
-	if (policy == SCHED_FIFO || policy == SCHED_RR)
-		return true;
-	if (policy == SCHED_DEADLINE)
-		return true;
-	return false;
-}
-#endif
-
 static void __hrtimer_init_sleeper(struct hrtimer_sleeper *sl,
 				   clockid_t clock_id,
 				   enum hrtimer_mode mode,
@@ -1742,13 +1726,12 @@ int nanosleep_copyout(struct restart_block *restart, struct timespec64 *ts)
 	return -ERESTART_RESTARTBLOCK;
 }
 
-static int __sched do_nanosleep(struct hrtimer_sleeper *t, enum hrtimer_mode mode,
-				unsigned long state)
+static int __sched do_nanosleep(struct hrtimer_sleeper *t, enum hrtimer_mode mode)
 {
 	struct restart_block *restart;
 
 	do {
-		set_current_state(state);
+		set_current_state(TASK_INTERRUPTIBLE);
 		hrtimer_start_expires(&t->timer, mode);
 
 		if (likely(t->task))
@@ -1786,15 +1769,13 @@ static long __sched hrtimer_nanosleep_restart(struct restart_block *restart)
 	hrtimer_init_sleeper_on_stack(&t, restart->nanosleep.clockid,
 				      HRTIMER_MODE_ABS, current);
 	hrtimer_set_expires_tv64(&t.timer, restart->nanosleep.expires);
-	/* cpu_chill() does not care about restart state. */
-	ret = do_nanosleep(&t, HRTIMER_MODE_ABS, TASK_INTERRUPTIBLE);
+	ret = do_nanosleep(&t, HRTIMER_MODE_ABS);
 	destroy_hrtimer_on_stack(&t.timer);
 	return ret;
 }
 
-static long __hrtimer_nanosleep(const struct timespec64 *rqtp,
-				const enum hrtimer_mode mode, const clockid_t clockid,
-				unsigned long state)
+long hrtimer_nanosleep(const struct timespec64 *rqtp,
+		       const enum hrtimer_mode mode, const clockid_t clockid)
 {
 	struct restart_block *restart;
 	struct hrtimer_sleeper t;
@@ -1807,7 +1788,7 @@ static long __hrtimer_nanosleep(const struct timespec64 *rqtp,
 
 	hrtimer_init_sleeper_on_stack(&t, clockid, mode, current);
 	hrtimer_set_expires_range_ns(&t.timer, timespec64_to_ktime(*rqtp), slack);
-	ret = do_nanosleep(&t, mode, state);
+	ret = do_nanosleep(&t, mode);
 	if (ret != -ERESTART_RESTARTBLOCK)
 		goto out;
 
@@ -1824,12 +1805,6 @@ static long __hrtimer_nanosleep(const struct timespec64 *rqtp,
 out:
 	destroy_hrtimer_on_stack(&t.timer);
 	return ret;
-}
-
-long hrtimer_nanosleep(const struct timespec64 *rqtp,
-		       const enum hrtimer_mode mode, const clockid_t clockid)
-{
-	return __hrtimer_nanosleep(rqtp, mode, clockid, TASK_INTERRUPTIBLE);
 }
 
 SYSCALL_DEFINE2(nanosleep, struct timespec __user *, rqtp,
@@ -1873,14 +1848,15 @@ COMPAT_SYSCALL_DEFINE2(nanosleep, struct compat_timespec __user *, rqtp,
  */
 void cpu_chill(void)
 {
-	struct timespec64 tu = {
-		.tv_nsec = NSEC_PER_MSEC,
-	};
+	ktime_t chill_time;
 	unsigned int freeze_flag = current->flags & PF_NOFREEZE;
 
+	chill_time = ktime_set(0, NSEC_PER_MSEC);
+	set_current_state(TASK_UNINTERRUPTIBLE);
 	current->flags |= PF_NOFREEZE;
-	__hrtimer_nanosleep(&tu, HRTIMER_MODE_REL_HARD, CLOCK_MONOTONIC,
-			    TASK_UNINTERRUPTIBLE);
+	sleeping_lock_inc();
+	schedule_hrtimeout(&chill_time, HRTIMER_MODE_REL_HARD);
+	sleeping_lock_dec();
 	if (!freeze_flag)
 		current->flags &= ~PF_NOFREEZE;
 }
@@ -1901,7 +1877,11 @@ int hrtimers_prepare_cpu(unsigned int cpu)
 	}
 
 	cpu_base->cpu = cpu;
+	cpu_base->active_bases = 0;
 	cpu_base->hres_active = 0;
+	cpu_base->hang_detected = 0;
+	cpu_base->next_timer = NULL;
+	cpu_base->softirq_next_timer = NULL;
 	cpu_base->expires_next = KTIME_MAX;
 	cpu_base->softirq_expires_next = KTIME_MAX;
 #ifdef CONFIG_PREEMPT_RT_BASE

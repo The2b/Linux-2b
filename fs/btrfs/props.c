@@ -164,7 +164,6 @@ static int iterate_object_props(struct btrfs_root *root,
 						 size_t),
 				void *ctx)
 {
-	struct btrfs_fs_info *fs_info = root->fs_info;
 	int ret;
 	char *name_buf = NULL;
 	char *value_buf = NULL;
@@ -214,12 +213,6 @@ static int iterate_object_props(struct btrfs_root *root,
 			this_len = sizeof(*di) + name_len + data_len;
 			name_ptr = (unsigned long)(di + 1);
 			data_ptr = name_ptr + name_len;
-
-			if (verify_dir_item(fs_info, leaf,
-					    path->slots[0], di)) {
-				ret = -EIO;
-				goto out;
-			}
 
 			if (name_len <= XATTR_BTRFS_PREFIX_LEN ||
 			    memcmp_extent_buffer(leaf, XATTR_BTRFS_PREFIX,
@@ -400,6 +393,7 @@ static int prop_compression_apply(struct inode *inode,
 				  const char *value,
 				  size_t len)
 {
+	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	int type;
 
 	if (len == 0) {
@@ -410,14 +404,17 @@ static int prop_compression_apply(struct inode *inode,
 		return 0;
 	}
 
-	if (!strncmp("lzo", value, 3))
+	if (!strncmp("lzo", value, 3)) {
 		type = BTRFS_COMPRESS_LZO;
-	else if (!strncmp("zlib", value, 4))
+		btrfs_set_fs_incompat(fs_info, COMPRESS_LZO);
+	} else if (!strncmp("zlib", value, 4)) {
 		type = BTRFS_COMPRESS_ZLIB;
-	else if (!strncmp("zstd", value, len))
+	} else if (!strncmp("zstd", value, len)) {
 		type = BTRFS_COMPRESS_ZSTD;
-	else
+		btrfs_set_fs_incompat(fs_info, COMPRESS_ZSTD);
+	} else {
 		return -EINVAL;
+	}
 
 	BTRFS_I(inode)->flags &= ~BTRFS_INODE_NOCOMPRESS;
 	BTRFS_I(inode)->flags |= BTRFS_INODE_COMPRESS;
@@ -430,11 +427,11 @@ static const char *prop_compression_extract(struct inode *inode)
 {
 	switch (BTRFS_I(inode)->prop_compress) {
 	case BTRFS_COMPRESS_ZLIB:
-		return "zlib";
 	case BTRFS_COMPRESS_LZO:
-		return "lzo";
 	case BTRFS_COMPRESS_ZSTD:
-		return "zstd";
+		return btrfs_compress_type2str(BTRFS_I(inode)->prop_compress);
+	default:
+		break;
 	}
 
 	return NULL;

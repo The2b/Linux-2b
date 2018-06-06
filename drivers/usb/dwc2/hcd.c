@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
  * hcd.c - DesignWare HS OTG Controller host-mode routines
  *
@@ -213,6 +214,11 @@ static int dwc2_hs_phy_init(struct dwc2_hsotg *hsotg, bool select_phy)
 		usbcfg &= ~(GUSBCFG_PHYIF16 | GUSBCFG_DDRSEL);
 		if (hsotg->params.phy_ulpi_ddr)
 			usbcfg |= GUSBCFG_DDRSEL;
+
+		/* Set external VBUS indicator as needed. */
+		if (hsotg->params.oc_disable)
+			usbcfg |= (GUSBCFG_ULPI_INT_VBUS_IND |
+				   GUSBCFG_INDICATORPASSTHROUGH);
 		break;
 	case DWC2_PHY_TYPE_PARAM_UTMI:
 		/* UTMI+ interface */
@@ -653,6 +659,10 @@ static void dwc2_dump_channel_info(struct dwc2_hsotg *hsotg,
 	list_for_each_entry(qh, &hsotg->non_periodic_sched_inactive,
 			    qh_list_entry)
 		dev_dbg(hsotg->dev, "    %p\n", qh);
+	dev_dbg(hsotg->dev, "  NP waiting sched:\n");
+	list_for_each_entry(qh, &hsotg->non_periodic_sched_waiting,
+			    qh_list_entry)
+		dev_dbg(hsotg->dev, "    %p\n", qh);
 	dev_dbg(hsotg->dev, "  NP active sched:\n");
 	list_for_each_entry(qh, &hsotg->non_periodic_sched_active,
 			    qh_list_entry)
@@ -979,6 +989,24 @@ void dwc2_hc_halt(struct dwc2_hsotg *hsotg, struct dwc2_host_chan *chan,
 
 	if (dbg_hc(chan))
 		dev_vdbg(hsotg->dev, "%s()\n", __func__);
+
+	/*
+	 * In buffer DMA or external DMA mode channel can't be halted
+	 * for non-split periodic channels. At the end of the next
+	 * uframe/frame (in the worst case), the core generates a channel
+	 * halted and disables the channel automatically.
+	 */
+	if ((hsotg->params.g_dma && !hsotg->params.g_dma_desc) ||
+	    hsotg->hw_params.arch == GHWCFG2_EXT_DMA_ARCH) {
+		if (!chan->do_split &&
+		    (chan->ep_type == USB_ENDPOINT_XFER_ISOC ||
+		     chan->ep_type == USB_ENDPOINT_XFER_INT)) {
+			dev_err(hsotg->dev, "%s() Channel can't be halted\n",
+				__func__);
+			return;
+		}
+	}
+
 	if (halt_status == DWC2_HC_XFER_NO_HALT_STATUS)
 		dev_err(hsotg->dev, "!!! halt_status = %d !!!\n", halt_status);
 
@@ -1812,6 +1840,7 @@ static void dwc2_qh_list_free(struct dwc2_hsotg *hsotg,
 static void dwc2_kill_all_urbs(struct dwc2_hsotg *hsotg)
 {
 	dwc2_kill_urbs_in_qh_list(hsotg, &hsotg->non_periodic_sched_inactive);
+	dwc2_kill_urbs_in_qh_list(hsotg, &hsotg->non_periodic_sched_waiting);
 	dwc2_kill_urbs_in_qh_list(hsotg, &hsotg->non_periodic_sched_active);
 	dwc2_kill_urbs_in_qh_list(hsotg, &hsotg->periodic_sched_inactive);
 	dwc2_kill_urbs_in_qh_list(hsotg, &hsotg->periodic_sched_ready);
@@ -2311,9 +2340,21 @@ static int dwc2_core_init(struct dwc2_hsotg *hsotg, bool initial_setup)
  */
 static void dwc2_core_host_init(struct dwc2_hsotg *hsotg)
 {
-	u32 hcfg, hfir, otgctl;
+	u32 hcfg, hfir, otgctl, usbcfg;
 
 	dev_dbg(hsotg->dev, "%s(%p)\n", __func__, hsotg);
+
+	/* Set HS/FS Timeout Calibration to 7 (max available value).
+	 * The number of PHY clocks that the application programs in
+	 * this field is added to the high/full speed interpacket timeout
+	 * duration in the core to account for any additional delays
+	 * introduced by the PHY. This can be required, because the delay
+	 * introduced by the PHY in generating the linestate condition
+	 * can vary from one PHY to another.
+	 */
+	usbcfg = dwc2_readl(hsotg->regs + GUSBCFG);
+	usbcfg |= GUSBCFG_TOUTCAL(7);
+	dwc2_writel(usbcfg, hsotg->regs + GUSBCFG);
 
 	/* Restart the Phy Clock */
 	dwc2_writel(0, hsotg->regs + PCGCTL);
@@ -3277,7 +3318,6 @@ static void dwc2_conn_id_status_change(struct work_struct *work)
 		dwc2_core_init(hsotg, false);
 		dwc2_enable_global_interrupts(hsotg);
 		spin_lock_irqsave(&hsotg->lock, flags);
-		dwc2_hsotg_disconnect(hsotg);
 		dwc2_hsotg_core_init_disconnected(hsotg, false);
 		spin_unlock_irqrestore(&hsotg->lock, flags);
 		dwc2_hsotg_core_connect(hsotg);
@@ -3296,8 +3336,12 @@ host:
 		if (count > 250)
 			dev_err(hsotg->dev,
 				"Connection id status change timed out\n");
-		hsotg->op_state = OTG_STATE_A_HOST;
 
+		spin_lock_irqsave(&hsotg->lock, flags);
+		dwc2_hsotg_disconnect(hsotg);
+		spin_unlock_irqrestore(&hsotg->lock, flags);
+
+		hsotg->op_state = OTG_STATE_A_HOST;
 		/* Initialize the Core for Host mode */
 		dwc2_core_init(hsotg, false);
 		dwc2_enable_global_interrupts(hsotg);
@@ -3305,9 +3349,9 @@ host:
 	}
 }
 
-static void dwc2_wakeup_detected(unsigned long data)
+static void dwc2_wakeup_detected(struct timer_list *t)
 {
-	struct dwc2_hsotg *hsotg = (struct dwc2_hsotg *)data;
+	struct dwc2_hsotg *hsotg = from_timer(hsotg, t, wkp_timer);
 	u32 hprt0;
 
 	dev_dbg(hsotg->dev, "%s()\n", __func__);
@@ -4989,6 +5033,7 @@ static void dwc2_hcd_free(struct dwc2_hsotg *hsotg)
 
 	/* Free memory for QH/QTD lists */
 	dwc2_qh_list_free(hsotg, &hsotg->non_periodic_sched_inactive);
+	dwc2_qh_list_free(hsotg, &hsotg->non_periodic_sched_waiting);
 	dwc2_qh_list_free(hsotg, &hsotg->non_periodic_sched_active);
 	dwc2_qh_list_free(hsotg, &hsotg->periodic_sched_inactive);
 	dwc2_qh_list_free(hsotg, &hsotg->periodic_sched_ready);
@@ -5146,11 +5191,11 @@ int dwc2_hcd_init(struct dwc2_hsotg *hsotg)
 	}
 	INIT_WORK(&hsotg->wf_otg, dwc2_conn_id_status_change);
 
-	setup_timer(&hsotg->wkp_timer, dwc2_wakeup_detected,
-		    (unsigned long)hsotg);
+	timer_setup(&hsotg->wkp_timer, dwc2_wakeup_detected, 0);
 
 	/* Initialize the non-periodic schedule */
 	INIT_LIST_HEAD(&hsotg->non_periodic_sched_inactive);
+	INIT_LIST_HEAD(&hsotg->non_periodic_sched_waiting);
 	INIT_LIST_HEAD(&hsotg->non_periodic_sched_active);
 
 	/* Initialize the periodic schedule */

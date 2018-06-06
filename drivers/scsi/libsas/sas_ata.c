@@ -176,7 +176,6 @@ qc_already_gone:
 
 static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 {
-	unsigned long flags;
 	struct sas_task *task;
 	struct scatterlist *sg;
 	int ret = AC_ERR_SYSTEM;
@@ -190,7 +189,6 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 	/* TODO: audit callers to ensure they are ready for qc_issue to
 	 * unconditionally re-enable interrupts
 	 */
-	local_irq_save_nort(flags);
 	spin_unlock(ap->lock);
 
 	/* If the device fell off, no sense in issuing commands */
@@ -252,7 +250,6 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 
  out:
 	spin_lock(ap->lock);
-	local_irq_restore_nort(flags);
 	return ret;
 }
 
@@ -730,7 +727,6 @@ int sas_discover_sata(struct domain_device *dev)
 	if (res)
 		return res;
 
-	sas_discover_event(dev->port, DISCE_PROBE);
 	return 0;
 }
 

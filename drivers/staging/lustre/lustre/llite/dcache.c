@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -89,7 +90,7 @@ static int ll_dcompare(const struct dentry *dentry,
 	       d_count(dentry));
 
 	/* mountpoint is always valid */
-	if (d_mountpoint((struct dentry *)dentry))
+	if (d_mountpoint(dentry))
 		return 0;
 
 	if (d_lustre_invalid(dentry))
@@ -110,7 +111,7 @@ static int ll_ddelete(const struct dentry *de)
 	LASSERT(de);
 
 	CDEBUG(D_DENTRY, "%s dentry %pd (%p, parent %p, inode %p) %s%s\n",
-	       d_lustre_invalid((struct dentry *)de) ? "deleting" : "keeping",
+	       d_lustre_invalid(de) ? "deleting" : "keeping",
 	       de, de, de->d_parent, d_inode(de),
 	       d_unhashed(de) ? "" : "hashed,",
 	       list_empty(&de->d_subdirs) ? "" : "subdirs");
@@ -118,7 +119,7 @@ static int ll_ddelete(const struct dentry *de)
 	/* kernel >= 2.6.38 last refcount is decreased after this function. */
 	LASSERT(d_count(de) == 1);
 
-	if (d_lustre_invalid((struct dentry *)de))
+	if (d_lustre_invalid(de))
 		return 1;
 	return 0;
 }
@@ -141,7 +142,8 @@ void ll_intent_drop_lock(struct lookup_intent *it)
 
 		handle.cookie = it->it_lock_handle;
 
-		CDEBUG(D_DLMTRACE, "releasing lock with cookie %#llx from it %p\n",
+		CDEBUG(D_DLMTRACE,
+		       "releasing lock with cookie %#llx from it %p\n",
 		       handle.cookie, it);
 		ldlm_lock_decref(&handle, it->it_lock_mode);
 
@@ -152,7 +154,8 @@ void ll_intent_drop_lock(struct lookup_intent *it)
 		if (it->it_remote_lock_mode != 0) {
 			handle.cookie = it->it_remote_lock_handle;
 
-			CDEBUG(D_DLMTRACE, "releasing remote lock with cookie%#llx from it %p\n",
+			CDEBUG(D_DLMTRACE,
+			       "releasing remote lock with cookie%#llx from it %p\n",
 			       handle.cookie, it);
 			ldlm_lock_decref(&handle,
 					 it->it_remote_lock_mode);
@@ -185,7 +188,8 @@ void ll_invalidate_aliases(struct inode *inode)
 
 	spin_lock(&inode->i_lock);
 	hlist_for_each_entry(dentry, &inode->i_dentry, d_u.d_alias) {
-		CDEBUG(D_DENTRY, "dentry in drop %pd (%p) parent %p inode %p flags %d\n",
+		CDEBUG(D_DENTRY,
+		       "dentry in drop %pd (%p) parent %p inode %p flags %d\n",
 		       dentry, dentry, dentry->d_parent,
 		       d_inode(dentry), dentry->d_flags);
 

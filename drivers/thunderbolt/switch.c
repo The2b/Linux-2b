@@ -172,11 +172,11 @@ static int nvm_authenticate_host(struct tb_switch *sw)
 
 	/*
 	 * Root switch NVM upgrade requires that we disconnect the
-	 * existing PCIe paths first (in case it is not in safe mode
+	 * existing paths first (in case it is not in safe mode
 	 * already).
 	 */
 	if (!sw->safe_mode) {
-		ret = tb_domain_disconnect_pcie_paths(sw->tb);
+		ret = tb_domain_disconnect_all_paths(sw->tb);
 		if (ret)
 			return ret;
 		/*
@@ -716,6 +716,13 @@ static int tb_switch_set_authorized(struct tb_switch *sw, unsigned int val)
 	if (sw->authorized)
 		goto unlock;
 
+	/*
+	 * Make sure there is no PCIe rescan ongoing when a new PCIe
+	 * tunnel is created. Otherwise the PCIe rescan code might find
+	 * the new tunnel too early.
+	 */
+	pci_lock_rescan_remove();
+
 	switch (val) {
 	/* Approve switch */
 	case 1:
@@ -734,6 +741,8 @@ static int tb_switch_set_authorized(struct tb_switch *sw, unsigned int val)
 	default:
 		break;
 	}
+
+	pci_unlock_rescan_remove();
 
 	if (!ret) {
 		sw->authorized = val;
@@ -1364,6 +1373,9 @@ void tb_switch_remove(struct tb_switch *sw)
 		if (sw->ports[i].remote)
 			tb_switch_remove(sw->ports[i].remote->sw);
 		sw->ports[i].remote = NULL;
+		if (sw->ports[i].xdomain)
+			tb_xdomain_remove(sw->ports[i].xdomain);
+		sw->ports[i].xdomain = NULL;
 	}
 
 	if (!sw->is_unplugged)

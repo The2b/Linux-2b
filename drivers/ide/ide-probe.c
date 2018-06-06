@@ -196,10 +196,10 @@ static void do_identify(ide_drive_t *drive, u8 cmd, u16 *id)
 	int bswap = 1;
 
 	/* local CPU only; some systems need this */
-	local_irq_save_nort(flags);
+	local_irq_save(flags);
 	/* read 512 bytes of id info */
 	hwif->tp_ops->input_data(drive, NULL, id, SECTOR_SIZE);
-	local_irq_restore_nort(flags);
+	local_irq_restore(flags);
 
 	drive->dev_flags |= IDE_DFLAG_ID_READ;
 #ifdef DEBUG
@@ -928,7 +928,7 @@ static int exact_lock(dev_t dev, void *data)
 {
 	struct gendisk *p = data;
 
-	if (!get_disk(p))
+	if (!get_disk_and_module(p))
 		return -1;
 	return 0;
 }
@@ -1184,7 +1184,7 @@ static void ide_init_port_data(ide_hwif_t *hwif, unsigned int index)
 
 	spin_lock_init(&hwif->lock);
 
-	setup_timer(&hwif->timer, &ide_timer_expiry, (unsigned long)hwif);
+	timer_setup(&hwif->timer, ide_timer_expiry, 0);
 
 	init_completion(&hwif->gendev_rel_comp);
 

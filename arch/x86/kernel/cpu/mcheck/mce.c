@@ -14,7 +14,6 @@
 #include <linux/capability.h>
 #include <linux/miscdevice.h>
 #include <linux/ratelimit.h>
-#include <linux/kallsyms.h>
 #include <linux/rcupdate.h>
 #include <linux/kobject.h>
 #include <linux/uaccess.h>
@@ -42,7 +41,6 @@
 #include <linux/debugfs.h>
 #include <linux/irq_work.h>
 #include <linux/export.h>
-#include <linux/jiffies.h>
 #include <linux/jump_label.h>
 
 #include <asm/intel-family.h>
@@ -57,6 +55,9 @@
 #include "mce-internal.h"
 
 static DEFINE_MUTEX(mce_log_mutex);
+
+/* sysfs synchronization */
+static DEFINE_MUTEX(mce_sysfs_mutex);
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/mce.h>
@@ -107,6 +108,10 @@ static struct irq_work mce_irq_work;
 
 static void (*quirk_no_way_out)(int bank, struct mce *m, struct pt_regs *regs);
 
+#ifndef mce_unmap_kpfn
+static void mce_unmap_kpfn(unsigned long pfn);
+#endif
+
 /*
  * CPU/chipset specific EDAC code can register a notifier call here to print
  * MCE errors in a human-readable form.
@@ -128,6 +133,8 @@ void mce_setup(struct mce *m)
 
 	if (this_cpu_has(X86_FEATURE_INTEL_PPIN))
 		rdmsrl(MSR_PPIN, m->ppin);
+
+	m->microcode = boot_cpu_data.microcode;
 }
 
 DEFINE_PER_CPU(struct mce, injectm);
@@ -236,7 +243,7 @@ static void __print_mce(struct mce *m)
 			m->cs, m->ip);
 
 		if (m->cs == __KERNEL_CS)
-			print_symbol("{%s}", m->ip);
+			pr_cont("{%pS}", (void *)(unsigned long)m->ip);
 		pr_cont("\n");
 	}
 
@@ -260,7 +267,7 @@ static void __print_mce(struct mce *m)
 	 */
 	pr_emerg(HW_ERR "PROCESSOR %u:%x TIME %llu SOCKET %u APIC %x microcode %x\n",
 		m->cpuvendor, m->cpuid, m->time, m->socketid, m->apicid,
-		cpu_data(m->extcpu).microcode);
+		m->microcode);
 }
 
 static void print_mce(struct mce *m)
@@ -504,10 +511,8 @@ static int mce_usable_address(struct mce *m)
 bool mce_is_memory_error(struct mce *m)
 {
 	if (m->cpuvendor == X86_VENDOR_AMD) {
-		/* ErrCodeExt[20:16] */
-		u8 xec = (m->status >> 16) & 0x1f;
+		return amd_mce_is_memory_error(m);
 
-		return (xec == 0x0 || xec == 0x8);
 	} else if (m->cpuvendor == X86_VENDOR_INTEL) {
 		/*
 		 * Intel SDM Volume 3B - 15.9.2 Compound Error Codes
@@ -531,6 +536,17 @@ bool mce_is_memory_error(struct mce *m)
 }
 EXPORT_SYMBOL_GPL(mce_is_memory_error);
 
+static bool mce_is_correctable(struct mce *m)
+{
+	if (m->cpuvendor == X86_VENDOR_AMD && m->status & MCI_STATUS_DEFERRED)
+		return false;
+
+	if (m->status & MCI_STATUS_UC)
+		return false;
+
+	return true;
+}
+
 static bool cec_add_mce(struct mce *m)
 {
 	if (!m)
@@ -538,7 +554,7 @@ static bool cec_add_mce(struct mce *m)
 
 	/* We eat only correctable DRAM errors with usable addresses. */
 	if (mce_is_memory_error(m) &&
-	    !(m->status & MCI_STATUS_UC) &&
+	    mce_is_correctable(m)  &&
 	    mce_usable_address(m))
 		if (!cec_add_elem(m->addr >> PAGE_SHIFT))
 			return true;
@@ -583,7 +599,8 @@ static int srao_decode_notifier(struct notifier_block *nb, unsigned long val,
 
 	if (mce_usable_address(mce) && (mce->severity == MCE_AO_SEVERITY)) {
 		pfn = mce->addr >> PAGE_SHIFT;
-		memory_failure(pfn, MCE_VECTOR, 0);
+		if (!memory_failure(pfn, 0))
+			mce_unmap_kpfn(pfn);
 	}
 
 	return NOTIFY_OK;
@@ -1047,15 +1064,16 @@ static int do_memory_failure(struct mce *m)
 	pr_err("Uncorrected hardware memory error in user-access at %llx", m->addr);
 	if (!(m->mcgstatus & MCG_STATUS_RIPV))
 		flags |= MF_MUST_KILL;
-	ret = memory_failure(m->addr >> PAGE_SHIFT, MCE_VECTOR, flags);
+	ret = memory_failure(m->addr >> PAGE_SHIFT, flags);
 	if (ret)
 		pr_err("Memory error not recovered");
+	else
+		mce_unmap_kpfn(m->addr >> PAGE_SHIFT);
 	return ret;
 }
 
-#if defined(arch_unmap_kpfn) && defined(CONFIG_MEMORY_FAILURE)
-
-void arch_unmap_kpfn(unsigned long pfn)
+#ifndef mce_unmap_kpfn
+static void mce_unmap_kpfn(unsigned long pfn)
 {
 	unsigned long decoy_addr;
 
@@ -1066,7 +1084,7 @@ void arch_unmap_kpfn(unsigned long pfn)
 	 * We would like to just call:
 	 *	set_memory_np((unsigned long)pfn_to_kaddr(pfn), 1);
 	 * but doing that would radically increase the odds of a
-	 * speculative access to the posion page because we'd have
+	 * speculative access to the poison page because we'd have
 	 * the virtual address of the kernel 1:1 mapping sitting
 	 * around in registers.
 	 * Instead we get tricky.  We create a non-canonical address
@@ -1091,7 +1109,6 @@ void arch_unmap_kpfn(unsigned long pfn)
 
 	if (set_memory_np(decoy_addr, 1))
 		pr_warn("Could not invalidate pfn=0x%lx from 1:1 map\n", pfn);
-
 }
 #endif
 
@@ -1326,7 +1343,7 @@ out_ist:
 EXPORT_SYMBOL_GPL(do_machine_check);
 
 #ifndef CONFIG_MEMORY_FAILURE
-int memory_failure(unsigned long pfn, int vector, int flags)
+int memory_failure(unsigned long pfn, int flags)
 {
 	/* mce_severity() should not hand us an ACTION_REQUIRED error */
 	BUG_ON(flags & MF_ACTION_REQUIRED);
@@ -1346,7 +1363,7 @@ int memory_failure(unsigned long pfn, int vector, int flags)
 static unsigned long check_interval = INITIAL_CHECK_INTERVAL;
 
 static DEFINE_PER_CPU(unsigned long, mce_next_interval); /* in jiffies */
-static DEFINE_PER_CPU(struct hrtimer, mce_timer);
+static DEFINE_PER_CPU(struct timer_list, mce_timer);
 
 static unsigned long mce_adjust_timer_default(unsigned long interval)
 {
@@ -1355,18 +1372,25 @@ static unsigned long mce_adjust_timer_default(unsigned long interval)
 
 static unsigned long (*mce_adjust_timer)(unsigned long interval) = mce_adjust_timer_default;
 
-static void __start_timer(struct hrtimer *t, unsigned long iv)
+static void __start_timer(struct timer_list *t, unsigned long interval)
 {
-	if (!iv)
-		return;
+	unsigned long when = jiffies + interval;
+	unsigned long flags;
 
-	hrtimer_start_range_ns(t, ns_to_ktime(jiffies_to_usecs(iv) * 1000ULL),
-			       0, HRTIMER_MODE_REL_PINNED);
+	local_irq_save(flags);
+
+	if (!timer_pending(t) || time_before(when, t->expires))
+		mod_timer(t, round_jiffies(when));
+
+	local_irq_restore(flags);
 }
 
-static  enum hrtimer_restart mce_timer_fn(struct hrtimer *timer)
+static void mce_timer_fn(struct timer_list *t)
 {
+	struct timer_list *cpu_t = this_cpu_ptr(&mce_timer);
 	unsigned long iv;
+
+	WARN_ON(cpu_t != t);
 
 	iv = __this_cpu_read(mce_next_interval);
 
@@ -1390,11 +1414,7 @@ static  enum hrtimer_restart mce_timer_fn(struct hrtimer *timer)
 
 done:
 	__this_cpu_write(mce_next_interval, iv);
-	if (!iv)
-		return HRTIMER_NORESTART;
-
-	hrtimer_forward_now(timer, ns_to_ktime(jiffies_to_nsecs(iv)));
-	return HRTIMER_RESTART;
+	__start_timer(t, iv);
 }
 
 /*
@@ -1402,7 +1422,7 @@ done:
  */
 void mce_timer_kick(unsigned long interval)
 {
-	struct hrtimer *t = this_cpu_ptr(&mce_timer);
+	struct timer_list *t = this_cpu_ptr(&mce_timer);
 	unsigned long iv = __this_cpu_read(mce_next_interval);
 
 	__start_timer(t, interval);
@@ -1417,7 +1437,7 @@ static void mce_timer_delete_all(void)
 	int cpu;
 
 	for_each_online_cpu(cpu)
-		hrtimer_cancel(&per_cpu(mce_timer, cpu));
+		del_timer_sync(&per_cpu(mce_timer, cpu));
 }
 
 /*
@@ -1746,7 +1766,7 @@ static void __mcheck_cpu_clear_vendor(struct cpuinfo_x86 *c)
 	}
 }
 
-static void mce_start_timer(struct hrtimer *t)
+static void mce_start_timer(struct timer_list *t)
 {
 	unsigned long iv = check_interval * HZ;
 
@@ -1759,19 +1779,16 @@ static void mce_start_timer(struct hrtimer *t)
 
 static void __mcheck_cpu_setup_timer(void)
 {
-	struct hrtimer *t = this_cpu_ptr(&mce_timer);
+	struct timer_list *t = this_cpu_ptr(&mce_timer);
 
-	hrtimer_init(t, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	t->function = mce_timer_fn;
+	timer_setup(t, mce_timer_fn, TIMER_PINNED);
 }
 
 static void __mcheck_cpu_init_timer(void)
 {
-	struct hrtimer *t = this_cpu_ptr(&mce_timer);
+	struct timer_list *t = this_cpu_ptr(&mce_timer);
 
-	hrtimer_init(t, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	t->function = mce_timer_fn;
-
+	timer_setup(t, mce_timer_fn, TIMER_PINNED);
 	mce_start_timer(t);
 }
 
@@ -2074,6 +2091,7 @@ static ssize_t set_ignore_ce(struct device *s,
 	if (kstrtou64(buf, 0, &new) < 0)
 		return -EINVAL;
 
+	mutex_lock(&mce_sysfs_mutex);
 	if (mca_cfg.ignore_ce ^ !!new) {
 		if (new) {
 			/* disable ce features */
@@ -2086,6 +2104,8 @@ static ssize_t set_ignore_ce(struct device *s,
 			on_each_cpu(mce_enable_ce, (void *)1, 1);
 		}
 	}
+	mutex_unlock(&mce_sysfs_mutex);
+
 	return size;
 }
 
@@ -2098,6 +2118,7 @@ static ssize_t set_cmci_disabled(struct device *s,
 	if (kstrtou64(buf, 0, &new) < 0)
 		return -EINVAL;
 
+	mutex_lock(&mce_sysfs_mutex);
 	if (mca_cfg.cmci_disabled ^ !!new) {
 		if (new) {
 			/* disable cmci */
@@ -2109,6 +2130,8 @@ static ssize_t set_cmci_disabled(struct device *s,
 			on_each_cpu(mce_enable_ce, NULL, 1);
 		}
 	}
+	mutex_unlock(&mce_sysfs_mutex);
+
 	return size;
 }
 
@@ -2116,8 +2139,19 @@ static ssize_t store_int_with_restart(struct device *s,
 				      struct device_attribute *attr,
 				      const char *buf, size_t size)
 {
-	ssize_t ret = device_store_int(s, attr, buf, size);
+	unsigned long old_check_interval = check_interval;
+	ssize_t ret = device_store_ulong(s, attr, buf, size);
+
+	if (check_interval == old_check_interval)
+		return ret;
+
+	if (check_interval < 1)
+		check_interval = 1;
+
+	mutex_lock(&mce_sysfs_mutex);
 	mce_restart();
+	mutex_unlock(&mce_sysfs_mutex);
+
 	return ret;
 }
 
@@ -2273,7 +2307,7 @@ static int mce_cpu_dead(unsigned int cpu)
 
 static int mce_cpu_online(unsigned int cpu)
 {
-	struct hrtimer *t = this_cpu_ptr(&mce_timer);
+	struct timer_list *t = this_cpu_ptr(&mce_timer);
 	int ret;
 
 	mce_device_create(cpu);
@@ -2290,10 +2324,10 @@ static int mce_cpu_online(unsigned int cpu)
 
 static int mce_cpu_pre_down(unsigned int cpu)
 {
-	struct hrtimer *t = this_cpu_ptr(&mce_timer);
+	struct timer_list *t = this_cpu_ptr(&mce_timer);
 
 	mce_disable_cpu();
-	hrtimer_cancel(t);
+	del_timer_sync(t);
 	mce_threshold_remove_device(cpu);
 	mce_device_remove(cpu);
 	return 0;

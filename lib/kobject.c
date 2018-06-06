@@ -1,12 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * kobject.c - library routines for handling generic kernel objects
  *
  * Copyright (c) 2002-2003 Patrick Mochel <mochel@osdl.org>
  * Copyright (c) 2006-2007 Greg Kroah-Hartman <greg@kroah.com>
  * Copyright (c) 2006-2007 Novell Inc.
- *
- * This file is released under the GPLv2.
- *
  *
  * Please see the file Documentation/kobject.txt for critical information
  * about using the kobject interface.
@@ -234,14 +232,12 @@ static int kobject_add_internal(struct kobject *kobj)
 
 		/* be noisy on error issues */
 		if (error == -EEXIST)
-			WARN(1, "%s failed for %s with "
-			     "-EEXIST, don't try to register things with "
-			     "the same name in the same directory.\n",
-			     __func__, kobject_name(kobj));
+			pr_err("%s failed for %s with -EEXIST, don't try to register things with the same name in the same directory.\n",
+			       __func__, kobject_name(kobj));
 		else
-			WARN(1, "%s failed for %s (error: %d parent: %s)\n",
-			     __func__, kobject_name(kobj), error,
-			     parent ? kobject_name(parent) : "'none'");
+			pr_err("%s failed for %s (error: %d parent: %s)\n",
+			       __func__, kobject_name(kobj), error,
+			       parent ? kobject_name(parent) : "'none'");
 	} else
 		kobj->state_in_sysfs = 1;
 
@@ -1039,6 +1035,7 @@ void *kobj_ns_grab_current(enum kobj_ns_type type)
 
 	return ns;
 }
+EXPORT_SYMBOL_GPL(kobj_ns_grab_current);
 
 const void *kobj_ns_netlink(enum kobj_ns_type type, struct sock *sk)
 {
@@ -1074,3 +1071,4 @@ void kobj_ns_drop(enum kobj_ns_type type, void *ns)
 		kobj_ns_ops_tbl[type]->drop_ns(ns);
 	spin_unlock(&kobj_ns_type_lock);
 }
+EXPORT_SYMBOL_GPL(kobj_ns_drop);

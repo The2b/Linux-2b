@@ -36,7 +36,6 @@ DEFINE_PER_CPU(char, rcu_cpu_has_work);
 
 #ifdef CONFIG_RCU_NOCB_CPU
 static cpumask_var_t rcu_nocb_mask; /* CPUs to have callbacks offloaded. */
-static bool have_rcu_nocb_mask;	    /* Was rcu_nocb_mask allocated? */
 static bool __read_mostly rcu_nocb_poll;    /* Offload kthread are to poll. */
 #endif /* #ifdef CONFIG_RCU_NOCB_CPU */
 
@@ -301,13 +300,13 @@ static void rcu_preempt_note_context_switch(bool preempt)
 	struct task_struct *t = current;
 	struct rcu_data *rdp;
 	struct rcu_node *rnp;
-	int mg_counter = 0;
+	int sleeping_l = 0;
 
-	RCU_LOCKDEP_WARN(!irqs_disabled(), "rcu_preempt_note_context_switch() invoked with interrupts enabled!!!\n");
-#if defined(CONFIG_PREEMPT_COUNT) && defined(CONFIG_SMP)
-	mg_counter = t->migrate_disable;
+	lockdep_assert_irqs_disabled();
+#if defined(CONFIG_PREEMPT_RT_FULL)
+	sleeping_l = t->sleeping_lock;
 #endif
-	WARN_ON_ONCE(!preempt && t->rcu_read_lock_nesting > 0 && !mg_counter);
+	WARN_ON_ONCE(!preempt && t->rcu_read_lock_nesting > 0 && !sleeping_l);
 	if (t->rcu_read_lock_nesting > 0 &&
 	    !t->rcu_read_unlock_special.b.blocked) {
 
@@ -896,8 +895,6 @@ static void rcu_cpu_kthread_setup(unsigned int cpu)
 
 #ifdef CONFIG_RCU_BOOST
 
-#include "../locking/rtmutex_common.h"
-
 /*
  * Carry out RCU priority boosting on the task indicated by ->exp_tasks
  * or ->boost_tasks, advancing the pointer to the next task in the
@@ -1303,7 +1300,7 @@ int rcu_needs_cpu(u64 basemono, u64 *nextevt)
 	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
 	unsigned long dj;
 
-	RCU_LOCKDEP_WARN(!irqs_disabled(), "rcu_needs_cpu() invoked with irqs enabled!!!");
+	lockdep_assert_irqs_disabled();
 
 	/* Snapshot to detect later posting of non-lazy callback. */
 	rdtp->nonlazy_posted_snap = rdtp->nonlazy_posted;
@@ -1353,7 +1350,7 @@ static void rcu_prepare_for_idle(void)
 	struct rcu_state *rsp;
 	int tne;
 
-	RCU_LOCKDEP_WARN(!irqs_disabled(), "rcu_prepare_for_idle() invoked with irqs enabled!!!");
+	lockdep_assert_irqs_disabled();
 	if (rcu_is_nocb_cpu(smp_processor_id()))
 		return;
 
@@ -1408,7 +1405,7 @@ static void rcu_prepare_for_idle(void)
  */
 static void rcu_cleanup_after_idle(void)
 {
-	RCU_LOCKDEP_WARN(!irqs_disabled(), "rcu_cleanup_after_idle() invoked with irqs enabled!!!");
+	lockdep_assert_irqs_disabled();
 	if (rcu_is_nocb_cpu(smp_processor_id()))
 		return;
 	if (rcu_try_advance_all_cbs())
@@ -1554,6 +1551,7 @@ static void print_cpu_stall_info_begin(void)
  */
 static void print_cpu_stall_info(struct rcu_state *rsp, int cpu)
 {
+	unsigned long delta;
 	char fast_no_hz[72];
 	struct rcu_data *rdp = per_cpu_ptr(rsp->rda, cpu);
 	struct rcu_dynticks *rdtp = rdp->dynticks;
@@ -1568,11 +1566,15 @@ static void print_cpu_stall_info(struct rcu_state *rsp, int cpu)
 		ticks_value = rsp->gpnum - rdp->gpnum;
 	}
 	print_cpu_stall_fast_no_hz(fast_no_hz, cpu);
-	pr_err("\t%d-%c%c%c: (%lu %s) idle=%03x/%llx/%d softirq=%u/%u fqs=%ld %s\n",
+	delta = rdp->mynode->gpnum - rdp->rcu_iw_gpnum;
+	pr_err("\t%d-%c%c%c%c: (%lu %s) idle=%03x/%ld/%ld softirq=%u/%u fqs=%ld %s\n",
 	       cpu,
 	       "O."[!!cpu_online(cpu)],
 	       "o."[!!(rdp->grpmask & rdp->mynode->qsmaskinit)],
 	       "N."[!!(rdp->grpmask & rdp->mynode->qsmaskinitnext)],
+	       !IS_ENABLED(CONFIG_IRQ_WORK) ? '?' :
+			rdp->rcu_iw_pending ? (int)min(delta, 9UL) + '0' :
+				"!."[!delta],
 	       ticks_value, ticks_title,
 	       rcu_dynticks_snap(rdtp) & 0xfff,
 	       rdtp->dynticks_nesting, rdtp->dynticks_nmi_nesting,
@@ -1630,7 +1632,6 @@ static void increment_cpu_stall_ticks(void)
 static int __init rcu_nocb_setup(char *str)
 {
 	alloc_bootmem_cpumask_var(&rcu_nocb_mask);
-	have_rcu_nocb_mask = true;
 	cpulist_parse(str, rcu_nocb_mask);
 	return 1;
 }
@@ -1679,7 +1680,7 @@ static void rcu_init_one_nocb(struct rcu_node *rnp)
 /* Is the specified CPU a no-CBs CPU? */
 bool rcu_is_nocb_cpu(int cpu)
 {
-	if (have_rcu_nocb_mask)
+	if (cpumask_available(rcu_nocb_mask))
 		return cpumask_test_cpu(cpu, rcu_nocb_mask);
 	return false;
 }
@@ -1895,7 +1896,7 @@ static bool __maybe_unused rcu_nocb_adopt_orphan_cbs(struct rcu_data *my_rdp,
 						     struct rcu_data *rdp,
 						     unsigned long flags)
 {
-	RCU_LOCKDEP_WARN(!irqs_disabled(), "rcu_nocb_adopt_orphan_cbs() invoked with irqs enabled!!!");
+	lockdep_assert_irqs_disabled();
 	if (!rcu_is_nocb_cpu(smp_processor_id()))
 		return false; /* Not NOCBs CPU, caller must migrate CBs. */
 	__call_rcu_nocb_enqueue(my_rdp, rcu_segcblist_head(&rdp->cblist),
@@ -2144,9 +2145,11 @@ static void do_nocb_deferred_wakeup_common(struct rcu_data *rdp)
 }
 
 /* Do a deferred wakeup of rcu_nocb_kthread() from a timer handler. */
-static void do_nocb_deferred_wakeup_timer(unsigned long x)
+static void do_nocb_deferred_wakeup_timer(struct timer_list *t)
 {
-	do_nocb_deferred_wakeup_common((struct rcu_data *)x);
+	struct rcu_data *rdp = from_timer(rdp, t, nocb_timer);
+
+	do_nocb_deferred_wakeup_common(rdp);
 }
 
 /*
@@ -2171,14 +2174,13 @@ void __init rcu_init_nohz(void)
 		need_rcu_nocb_mask = true;
 #endif /* #if defined(CONFIG_NO_HZ_FULL) */
 
-	if (!have_rcu_nocb_mask && need_rcu_nocb_mask) {
+	if (!cpumask_available(rcu_nocb_mask) && need_rcu_nocb_mask) {
 		if (!zalloc_cpumask_var(&rcu_nocb_mask, GFP_KERNEL)) {
 			pr_info("rcu_nocb_mask allocation failed, callback offloading disabled.\n");
 			return;
 		}
-		have_rcu_nocb_mask = true;
 	}
-	if (!have_rcu_nocb_mask)
+	if (!cpumask_available(rcu_nocb_mask))
 		return;
 
 #if defined(CONFIG_NO_HZ_FULL)
@@ -2210,8 +2212,7 @@ static void __init rcu_boot_init_nocb_percpu_data(struct rcu_data *rdp)
 	init_swait_queue_head(&rdp->nocb_wq);
 	rdp->nocb_follower_tail = &rdp->nocb_follower_head;
 	raw_spin_lock_init(&rdp->nocb_lock);
-	setup_timer(&rdp->nocb_timer, do_nocb_deferred_wakeup_timer,
-		    (unsigned long)rdp);
+	timer_setup(&rdp->nocb_timer, do_nocb_deferred_wakeup_timer, 0);
 }
 
 /*
@@ -2305,7 +2306,7 @@ static void __init rcu_organize_nocb_kthreads(struct rcu_state *rsp)
 	struct rcu_data *rdp_leader = NULL;  /* Suppress misguided gcc warn. */
 	struct rcu_data *rdp_prev = NULL;
 
-	if (!have_rcu_nocb_mask)
+	if (!cpumask_available(rcu_nocb_mask))
 		return;
 	if (ls == -1) {
 		ls = int_sqrt(nr_cpu_ids);
@@ -2466,7 +2467,7 @@ static void rcu_bind_gp_kthread(void)
 
 	if (!tick_nohz_full_enabled())
 		return;
-	housekeeping_affine(current);
+	housekeeping_affine(current, HK_FLAG_RCU);
 }
 
 /* Record the current task on dyntick-idle entry. */

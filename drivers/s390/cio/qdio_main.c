@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Linux for s390 qdio support, buffer handling, qdio API and module support.
  *
@@ -71,6 +72,7 @@ static inline int do_siga_input(unsigned long schid, unsigned int mask,
  * @mask: which output queues to process
  * @bb: busy bit indicator, set only if SIGA-w/wt could not access a buffer
  * @fc: function code to perform
+ * @aob: asynchronous operation block
  *
  * Returns condition code.
  * Note: For IQDC unicast queues only the highest priority queue is processed.
@@ -126,7 +128,7 @@ static inline int qdio_check_ccq(struct qdio_q *q, unsigned int ccq)
 static int qdio_do_eqbs(struct qdio_q *q, unsigned char *state,
 			int start, int count, int auto_ack)
 {
-	int rc, tmp_count = count, tmp_start = start, nr = q->nr, retried = 0;
+	int rc, tmp_count = count, tmp_start = start, nr = q->nr;
 	unsigned int ccq = 0;
 
 	qperf_inc(q, eqbs);
@@ -149,14 +151,7 @@ again:
 		qperf_inc(q, eqbs_partial);
 		DBF_DEV_EVENT(DBF_WARN, q->irq_ptr, "EQBS part:%02x",
 			tmp_count);
-		/*
-		 * Retry once, if that fails bail out and process the
-		 * extracted buffers before trying again.
-		 */
-		if (!retried++)
-			goto again;
-		else
-			return count - tmp_count;
+		return count - tmp_count;
 	}
 
 	DBF_ERROR("%4x EQBS ERROR", SCH_NO(q));
@@ -212,7 +207,10 @@ again:
 	return 0;
 }
 
-/* returns number of examined buffers and their common state in *state */
+/*
+ * Returns number of examined buffers and their common state in *state.
+ * Requested number of buffers-to-examine must be > 0.
+ */
 static inline int get_buf_states(struct qdio_q *q, unsigned int bufnr,
 				 unsigned char *state, unsigned int count,
 				 int auto_ack, int merge_pending)
@@ -223,17 +221,23 @@ static inline int get_buf_states(struct qdio_q *q, unsigned int bufnr,
 	if (is_qebsm(q))
 		return qdio_do_eqbs(q, state, bufnr, count, auto_ack);
 
-	for (i = 0; i < count; i++) {
-		if (!__state) {
-			__state = q->slsb.val[bufnr];
-			if (merge_pending && __state == SLSB_P_OUTPUT_PENDING)
-				__state = SLSB_P_OUTPUT_EMPTY;
-		} else if (merge_pending) {
-			if ((q->slsb.val[bufnr] & __state) != __state)
-				break;
-		} else if (q->slsb.val[bufnr] != __state)
-			break;
+	/* get initial state: */
+	__state = q->slsb.val[bufnr];
+	if (merge_pending && __state == SLSB_P_OUTPUT_PENDING)
+		__state = SLSB_P_OUTPUT_EMPTY;
+
+	for (i = 1; i < count; i++) {
 		bufnr = next_buf(bufnr);
+
+		/* merge PENDING into EMPTY: */
+		if (merge_pending &&
+		    q->slsb.val[bufnr] == SLSB_P_OUTPUT_PENDING &&
+		    __state == SLSB_P_OUTPUT_EMPTY)
+			continue;
+
+		/* stop if next state differs from initial state: */
+		if (q->slsb.val[bufnr] != __state)
+			break;
 	}
 	*state = __state;
 	return i;
@@ -430,8 +434,8 @@ static void process_buffer_error(struct qdio_q *q, int count)
 	q->qdio_error = QDIO_ERROR_SLSB_STATE;
 
 	/* special handling for no target buffer empty */
-	if ((!q->is_input_q &&
-	    (q->sbal[q->first_to_check]->element[15].sflags) == 0x10)) {
+	if (queue_type(q) == QDIO_IQDIO_QFMT && !q->is_input_q &&
+	    q->sbal[q->first_to_check]->element[15].sflags == 0x10) {
 		qperf_inc(q, target_full);
 		DBF_DEV_EVENT(DBF_INFO, q->irq_ptr, "OUTFULL FTC:%02x",
 			      q->first_to_check);
@@ -535,7 +539,8 @@ static int get_inbound_buffer_frontier(struct qdio_q *q)
 	case SLSB_P_INPUT_ERROR:
 		process_buffer_error(q, count);
 		q->first_to_check = add_buf(q->first_to_check, count);
-		atomic_sub(count, &q->nr_buf_used);
+		if (atomic_sub_return(count, &q->nr_buf_used) == 0)
+			qperf_inc(q, inbound_queue_full);
 		if (q->irq_ptr->perf_stat_enabled)
 			account_sbals_error(q, count);
 		break;
@@ -894,9 +899,9 @@ void qdio_outbound_processing(unsigned long data)
 	__qdio_outbound_processing(q);
 }
 
-void qdio_outbound_timer(unsigned long data)
+void qdio_outbound_timer(struct timer_list *t)
 {
-	struct qdio_q *q = (struct qdio_q *)data;
+	struct qdio_q *q = from_timer(q, t, u.out.timer);
 
 	qdio_tasklet_schedule(q);
 }
@@ -1759,9 +1764,6 @@ EXPORT_SYMBOL(qdio_stop_irq);
  * @response:		Response code will be stored at this address
  * @cb: 		Callback function will be executed for each element
  *			of the address list
- * @priv:		Pointer passed from the caller to qdio_pnso_brinfo()
- * @type:		Type of the address entry passed to the callback
- * @entry:		Entry containg the address of the specified type
  * @priv:		Pointer to pass to the callback function.
  *
  * Performs "Store-network-bridging-information list" operation and calls

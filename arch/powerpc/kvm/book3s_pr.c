@@ -121,7 +121,7 @@ static void kvmppc_core_vcpu_put_pr(struct kvm_vcpu *vcpu)
 #ifdef CONFIG_PPC_BOOK3S_64
 	struct kvmppc_book3s_shadow_vcpu *svcpu = svcpu_get(vcpu);
 	if (svcpu->in_use) {
-		kvmppc_copy_from_svcpu(vcpu, svcpu);
+		kvmppc_copy_from_svcpu(vcpu);
 	}
 	memcpy(to_book3s(vcpu)->slb_shadow, svcpu->slb, sizeof(svcpu->slb));
 	to_book3s(vcpu)->slb_shadow_max = svcpu->slb_max;
@@ -143,9 +143,10 @@ static void kvmppc_core_vcpu_put_pr(struct kvm_vcpu *vcpu)
 }
 
 /* Copy data needed by real-mode code from vcpu to shadow vcpu */
-void kvmppc_copy_to_svcpu(struct kvmppc_book3s_shadow_vcpu *svcpu,
-			  struct kvm_vcpu *vcpu)
+void kvmppc_copy_to_svcpu(struct kvm_vcpu *vcpu)
 {
+	struct kvmppc_book3s_shadow_vcpu *svcpu = svcpu_get(vcpu);
+
 	svcpu->gpr[0] = vcpu->arch.gpr[0];
 	svcpu->gpr[1] = vcpu->arch.gpr[1];
 	svcpu->gpr[2] = vcpu->arch.gpr[2];
@@ -177,17 +178,14 @@ void kvmppc_copy_to_svcpu(struct kvmppc_book3s_shadow_vcpu *svcpu,
 	if (cpu_has_feature(CPU_FTR_ARCH_207S))
 		vcpu->arch.entry_ic = mfspr(SPRN_IC);
 	svcpu->in_use = true;
+
+	svcpu_put(svcpu);
 }
 
 /* Copy data touched by real-mode code from shadow vcpu back to vcpu */
-void kvmppc_copy_from_svcpu(struct kvm_vcpu *vcpu,
-			    struct kvmppc_book3s_shadow_vcpu *svcpu)
+void kvmppc_copy_from_svcpu(struct kvm_vcpu *vcpu)
 {
-	/*
-	 * vcpu_put would just call us again because in_use hasn't
-	 * been updated yet.
-	 */
-	preempt_disable();
+	struct kvmppc_book3s_shadow_vcpu *svcpu = svcpu_get(vcpu);
 
 	/*
 	 * Maybe we were already preempted and synced the svcpu from
@@ -233,7 +231,7 @@ void kvmppc_copy_from_svcpu(struct kvm_vcpu *vcpu,
 	svcpu->in_use = false;
 
 out:
-	preempt_enable();
+	svcpu_put(svcpu);
 }
 
 static int kvmppc_core_check_requests_pr(struct kvm_vcpu *vcpu)
@@ -1328,12 +1326,22 @@ static int kvm_arch_vcpu_ioctl_set_sregs_pr(struct kvm_vcpu *vcpu,
 	kvmppc_set_pvr_pr(vcpu, sregs->pvr);
 
 	vcpu3s->sdr1 = sregs->u.s.sdr1;
+#ifdef CONFIG_PPC_BOOK3S_64
 	if (vcpu->arch.hflags & BOOK3S_HFLAG_SLB) {
+		/* Flush all SLB entries */
+		vcpu->arch.mmu.slbmte(vcpu, 0, 0);
+		vcpu->arch.mmu.slbia(vcpu);
+
 		for (i = 0; i < 64; i++) {
-			vcpu->arch.mmu.slbmte(vcpu, sregs->u.s.ppc64.slb[i].slbv,
-						    sregs->u.s.ppc64.slb[i].slbe);
+			u64 rb = sregs->u.s.ppc64.slb[i].slbe;
+			u64 rs = sregs->u.s.ppc64.slb[i].slbv;
+
+			if (rb & SLB_ESID_V)
+				vcpu->arch.mmu.slbmte(vcpu, rs, rb);
 		}
-	} else {
+	} else
+#endif
+	{
 		for (i = 0; i < 16; i++) {
 			vcpu->arch.mmu.mtsrin(vcpu, i, sregs->u.s.ppc32.sr[i]);
 		}

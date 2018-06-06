@@ -1323,7 +1323,7 @@ static void hauppauge_eeprom(struct cx23885_dev *dev, u8 *eeprom_data)
 static void tbs_card_init(struct cx23885_dev *dev)
 {
 	int i;
-	const u8 buf[] = {
+	static const u8 buf[] = {
 		0xe0, 0x06, 0x66, 0x33, 0x65,
 		0x01, 0x17, 0x06, 0xde};
 
@@ -1816,13 +1816,13 @@ int cx23885_ir_init(struct cx23885_dev *dev)
 {
 	static struct v4l2_subdev_io_pin_config ir_rxtx_pin_cfg[] = {
 		{
-			.flags	  = V4L2_SUBDEV_IO_PIN_INPUT,
+			.flags	  = BIT(V4L2_SUBDEV_IO_PIN_INPUT),
 			.pin	  = CX23885_PIN_IR_RX_GPIO19,
 			.function = CX23885_PAD_IR_RX,
 			.value	  = 0,
 			.strength = CX25840_PIN_DRIVE_MEDIUM,
 		}, {
-			.flags	  = V4L2_SUBDEV_IO_PIN_OUTPUT,
+			.flags	  = BIT(V4L2_SUBDEV_IO_PIN_OUTPUT),
 			.pin	  = CX23885_PIN_IR_TX_GPIO20,
 			.function = CX23885_PAD_IR_TX,
 			.value	  = 0,
@@ -1833,7 +1833,7 @@ int cx23885_ir_init(struct cx23885_dev *dev)
 
 	static struct v4l2_subdev_io_pin_config ir_rx_pin_cfg[] = {
 		{
-			.flags	  = V4L2_SUBDEV_IO_PIN_INPUT,
+			.flags	  = BIT(V4L2_SUBDEV_IO_PIN_INPUT),
 			.pin	  = CX23885_PIN_IR_RX_GPIO19,
 			.function = CX23885_PAD_IR_RX,
 			.value	  = 0,
@@ -2286,6 +2286,10 @@ void cx23885_card_setup(struct cx23885_dev *dev)
 				&dev->i2c_bus[2].i2c_adap,
 				"cx25840", 0x88 >> 1, NULL);
 		if (dev->sd_cx25840) {
+			/* set host data for clk_freq configuration */
+			v4l2_set_subdev_hostdata(dev->sd_cx25840,
+						&dev->clk_freq);
+
 			dev->sd_cx25840->grp_id = CX23885_HW_AV_CORE;
 			v4l2_subdev_call(dev->sd_cx25840, core, load_fw);
 		}

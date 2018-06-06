@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * USB Type-C Connector System Software Interface driver
  *
  * Copyright (C) 2017, Intel Corporation
  * Author: Heikki Krogerus <heikki.krogerus@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/completion.h>
@@ -31,7 +28,7 @@
  * difficult to estimate the time it takes for the system to process the command
  * before it is actually passed to the PPM.
  */
-#define UCSI_TIMEOUT_MS		1000
+#define UCSI_TIMEOUT_MS		5000
 
 /*
  * UCSI_SWAP_TIMEOUT_MS - Timeout for role swap requests

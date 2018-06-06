@@ -51,6 +51,9 @@ cflags-$(CONFIG_MIVYBRIDGE)	+= -march=i686 $(call tune,ivybridge)
 cflags-$(CONFIG_MHASWELL)	+= -march=i686 $(call tune,haswell)
 cflags-$(CONFIG_MBROADWELL)	+= -march=i686 $(call tune,broadwell)
 cflags-$(CONFIG_MSKYLAKE)	+= -march=i686 $(call tune,skylake)
+cflags-$(CONFIG_MSKYLAKEX)	+= -march=i686 $(call tune,skylake-avx512)
+cflags-$(CONFIG_MCANNONLAKE)	+= -march=i686 $(call tune,cannonlake)
+cflags-$(CONFIG_MICELAKE)	+= -march=i686 $(call tune,icelake)
 cflags-$(CONFIG_MATOM)		+= $(call cc-option,-march=bonnell,$(call cc-option,-march=core2,-march=i686)) \
 	$(call cc-option,-mtune=bonnell,$(call cc-option,-mtune=generic))
 

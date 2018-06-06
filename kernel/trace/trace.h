@@ -748,8 +748,6 @@ extern int trace_selftest_startup_wakeup(struct tracer *trace,
 					 struct trace_array *tr);
 extern int trace_selftest_startup_nop(struct tracer *trace,
 					 struct trace_array *tr);
-extern int trace_selftest_startup_sched_switch(struct tracer *trace,
-					       struct trace_array *tr);
 extern int trace_selftest_startup_branch(struct tracer *trace,
 					 struct trace_array *tr);
 /*
@@ -1469,7 +1467,7 @@ extern struct trace_event_file *find_event_file(struct trace_array *tr,
 
 static inline void *event_file_data(struct file *filp)
 {
-	return ACCESS_ONCE(file_inode(filp)->i_private);
+	return READ_ONCE(file_inode(filp)->i_private);
 }
 
 extern struct mutex event_mutex;

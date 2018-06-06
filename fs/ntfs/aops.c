@@ -93,13 +93,11 @@ static void ntfs_end_buffer_async_read(struct buffer_head *bh, int uptodate)
 			ofs = 0;
 			if (file_ofs < init_size)
 				ofs = init_size - file_ofs;
-			local_irq_save_nort(flags);
 			kaddr = kmap_atomic(page);
 			memset(kaddr + bh_offset(bh) + ofs, 0,
 					bh->b_size - ofs);
 			flush_dcache_page(page);
 			kunmap_atomic(kaddr);
-			local_irq_restore_nort(flags);
 		}
 	} else {
 		clear_buffer_uptodate(bh);
@@ -144,13 +142,11 @@ static void ntfs_end_buffer_async_read(struct buffer_head *bh, int uptodate)
 		recs = PAGE_SIZE / rec_size;
 		/* Should have been verified before we got here... */
 		BUG_ON(!recs);
-		local_irq_save_nort(flags);
 		kaddr = kmap_atomic(page);
 		for (i = 0; i < recs; i++)
 			post_read_mst_fixup((NTFS_RECORD*)(kaddr +
 					i * rec_size), rec_size);
 		kunmap_atomic(kaddr);
-		local_irq_restore_nort(flags);
 		flush_dcache_page(page);
 		if (likely(page_uptodate && !PageError(page)))
 			SetPageUptodate(page);
@@ -1735,7 +1731,7 @@ void mark_ntfs_record_dirty(struct page *page, const unsigned int ofs) {
 	spin_lock(&mapping->private_lock);
 	if (unlikely(!page_has_buffers(page))) {
 		spin_unlock(&mapping->private_lock);
-		bh = head = alloc_page_buffers(page, bh_size, 1);
+		bh = head = alloc_page_buffers(page, bh_size, true);
 		spin_lock(&mapping->private_lock);
 		if (likely(!page_has_buffers(page))) {
 			struct buffer_head *tail;

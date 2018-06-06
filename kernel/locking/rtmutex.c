@@ -1141,6 +1141,7 @@ void __sched rt_spin_lock_slowunlock(struct rt_mutex *lock)
 
 void __lockfunc rt_spin_lock(spinlock_t *lock)
 {
+	sleeping_lock_inc();
 	migrate_disable();
 	spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
 	rt_spin_lock_fastlock(&lock->lock, rt_spin_lock_slowlock);
@@ -1155,6 +1156,7 @@ void __lockfunc __rt_spin_lock(struct rt_mutex *lock)
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 void __lockfunc rt_spin_lock_nested(spinlock_t *lock, int subclass)
 {
+	sleeping_lock_inc();
 	migrate_disable();
 	spin_acquire(&lock->dep_map, subclass, 0, _RET_IP_);
 	rt_spin_lock_fastlock(&lock->lock, rt_spin_lock_slowlock);
@@ -1168,6 +1170,7 @@ void __lockfunc rt_spin_unlock(spinlock_t *lock)
 	spin_release(&lock->dep_map, 1, _RET_IP_);
 	rt_spin_lock_fastunlock(&lock->lock, rt_spin_lock_slowunlock);
 	migrate_enable();
+	sleeping_lock_dec();
 }
 EXPORT_SYMBOL(rt_spin_unlock);
 
@@ -1193,12 +1196,15 @@ int __lockfunc rt_spin_trylock(spinlock_t *lock)
 {
 	int ret;
 
+	sleeping_lock_inc();
 	migrate_disable();
 	ret = __rt_mutex_trylock(&lock->lock);
-	if (ret)
+	if (ret) {
 		spin_acquire(&lock->dep_map, 0, 1, _RET_IP_);
-	else
+	} else {
 		migrate_enable();
+		sleeping_lock_dec();
+	}
 	return ret;
 }
 EXPORT_SYMBOL(rt_spin_trylock);
@@ -1210,6 +1216,7 @@ int __lockfunc rt_spin_trylock_bh(spinlock_t *lock)
 	local_bh_disable();
 	ret = __rt_mutex_trylock(&lock->lock);
 	if (ret) {
+		sleeping_lock_inc();
 		migrate_disable();
 		spin_acquire(&lock->dep_map, 0, 1, _RET_IP_);
 	} else
@@ -1225,25 +1232,13 @@ int __lockfunc rt_spin_trylock_irqsave(spinlock_t *lock, unsigned long *flags)
 	*flags = 0;
 	ret = __rt_mutex_trylock(&lock->lock);
 	if (ret) {
+		sleeping_lock_inc();
 		migrate_disable();
 		spin_acquire(&lock->dep_map, 0, 1, _RET_IP_);
 	}
 	return ret;
 }
 EXPORT_SYMBOL(rt_spin_trylock_irqsave);
-
-int atomic_dec_and_spin_lock(atomic_t *atomic, spinlock_t *lock)
-{
-	/* Subtract 1 from counter unless that drops it to 0 (ie. it was 1) */
-	if (atomic_add_unless(atomic, -1, 1))
-		return 0;
-	rt_spin_lock(lock);
-	if (atomic_dec_and_test(atomic))
-		return 1;
-	rt_spin_unlock(lock);
-	return 0;
-}
-EXPORT_SYMBOL(atomic_dec_and_spin_lock);
 
 void
 __rt_spin_lock_init(spinlock_t *lock, const char *name, struct lock_class_key *key)
@@ -1265,7 +1260,7 @@ EXPORT_SYMBOL(__rt_spin_lock_init);
 __mutex_lock_check_stamp(struct rt_mutex *lock, struct ww_acquire_ctx *ctx)
 {
 	struct ww_mutex *ww = container_of(lock, struct ww_mutex, base.lock);
-	struct ww_acquire_ctx *hold_ctx = ACCESS_ONCE(ww->ctx);
+	struct ww_acquire_ctx *hold_ctx = READ_ONCE(ww->ctx);
 
 	if (!hold_ctx)
 		return 0;
@@ -1752,9 +1747,8 @@ int __sched rt_mutex_slowlock_locked(struct rt_mutex *lock, int state,
 
 	if (unlikely(ret)) {
 		__set_current_state(TASK_RUNNING);
-		if (rt_mutex_has_waiters(lock))
-			remove_waiter(lock, waiter);
-		/* ww_mutex want to report EDEADLK/EALREADY, let them */
+		remove_waiter(lock, waiter);
+		/* ww_mutex wants to report EDEADLK/EALREADY, let it */
 		if (!ww_ctx)
 			rt_mutex_handle_deadlock(ret, chwalk, waiter);
 	} else if (ww_ctx) {
@@ -2196,8 +2190,8 @@ static bool __sched __rt_mutex_unlock_common(struct rt_mutex *lock,
  * simple and will not need to retry.
  */
 bool __sched __rt_mutex_futex_unlock(struct rt_mutex *lock,
-				    struct wake_q_head *wake_q,
-				    struct wake_q_head *wq_sleeper)
+				     struct wake_q_head *wake_q,
+				     struct wake_q_head *wq_sleeper)
 {
 	return __rt_mutex_unlock_common(lock, wake_q, wq_sleeper);
 }
@@ -2206,11 +2200,12 @@ void __sched rt_mutex_futex_unlock(struct rt_mutex *lock)
 {
 	DEFINE_WAKE_Q(wake_q);
 	DEFINE_WAKE_Q(wake_sleeper_q);
+	unsigned long flags;
 	bool postunlock;
 
-	raw_spin_lock_irq(&lock->wait_lock);
+	raw_spin_lock_irqsave(&lock->wait_lock, flags);
 	postunlock = __rt_mutex_futex_unlock(lock, &wake_q, &wake_sleeper_q);
-	raw_spin_unlock_irq(&lock->wait_lock);
+	raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
 
 	if (postunlock)
 		rt_mutex_postunlock(&wake_q, &wake_sleeper_q);
@@ -2354,7 +2349,7 @@ int __rt_mutex_start_proxy_lock(struct rt_mutex *lock,
 		ret = 0;
 	}
 
-	if (ret && rt_mutex_has_waiters(lock))
+	if (unlikely(ret))
 		remove_waiter(lock, waiter);
 
 	debug_rt_mutex_print_deadlock(waiter);

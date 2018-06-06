@@ -7,7 +7,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -129,6 +129,27 @@ acpi_cpu_flags acpi_os_acquire_lock(acpi_spinlock handle);
 
 #ifndef ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_release_lock
 void acpi_os_release_lock(acpi_spinlock handle, acpi_cpu_flags flags);
+#endif
+
+/*
+ * RAW spinlock primitives. If the OS does not provide them, fallback to
+ * spinlock primitives
+ */
+#ifndef ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_create_raw_lock
+# define acpi_os_create_raw_lock(out_handle)	acpi_os_create_lock(out_handle)
+#endif
+
+#ifndef ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_delete_raw_lock
+# define acpi_os_delete_raw_lock(handle)	acpi_os_delete_lock(handle)
+#endif
+
+#ifndef ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_acquire_raw_lock
+# define acpi_os_acquire_raw_lock(handle)	acpi_os_acquire_lock(handle)
+#endif
+
+#ifndef ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_release_raw_lock
+# define acpi_os_release_raw_lock(handle, flags)	\
+	acpi_os_release_lock(handle, flags)
 #endif
 
 /*
@@ -287,6 +308,8 @@ acpi_status acpi_os_write_port(acpi_io_address address, u32 value, u32 width);
 /*
  * Platform and hardware-independent physical memory interfaces
  */
+int acpi_os_read_iomem(void __iomem *virt_addr, u64 *value, u32 width);
+
 #ifndef ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_read_memory
 acpi_status
 acpi_os_read_memory(acpi_physical_address address, u64 *value, u32 width);

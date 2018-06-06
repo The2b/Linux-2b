@@ -210,7 +210,7 @@ extern void devm_free_irq(struct device *dev, unsigned int irq, void *dev_id);
 #ifdef CONFIG_LOCKDEP
 # define local_irq_enable_in_hardirq()	do { } while (0)
 #else
-# define local_irq_enable_in_hardirq()	local_irq_enable_nort()
+# define local_irq_enable_in_hardirq()	local_irq_enable()
 #endif
 
 extern void disable_irq_nosync(unsigned int irq);
@@ -629,21 +629,6 @@ static inline void tasklet_hi_schedule(struct tasklet_struct *t)
 		__tasklet_hi_schedule(t);
 }
 
-extern void __tasklet_hi_schedule_first(struct tasklet_struct *t);
-
-/*
- * This version avoids touching any other tasklets. Needed for kmemcheck
- * in order not to take any page faults while enqueueing this tasklet;
- * consider VERY carefully whether you really need this or
- * tasklet_hi_schedule()...
- */
-static inline void tasklet_hi_schedule_first(struct tasklet_struct *t)
-{
-	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
-		__tasklet_hi_schedule_first(t);
-}
-
-
 static inline void tasklet_disable_nosync(struct tasklet_struct *t)
 {
 	atomic_inc(&t->count);
@@ -668,6 +653,31 @@ extern void softirq_early_init(void);
 #else
 static inline void softirq_early_init(void) { }
 #endif
+
+struct tasklet_hrtimer {
+	struct hrtimer		timer;
+	struct tasklet_struct	tasklet;
+	enum hrtimer_restart	(*function)(struct hrtimer *);
+};
+
+extern void
+tasklet_hrtimer_init(struct tasklet_hrtimer *ttimer,
+		     enum hrtimer_restart (*function)(struct hrtimer *),
+		     clockid_t which_clock, enum hrtimer_mode mode);
+
+static inline
+void tasklet_hrtimer_start(struct tasklet_hrtimer *ttimer, ktime_t time,
+			   const enum hrtimer_mode mode)
+{
+	hrtimer_start(&ttimer->timer, time, mode);
+}
+
+static inline
+void tasklet_hrtimer_cancel(struct tasklet_hrtimer *ttimer)
+{
+	hrtimer_cancel(&ttimer->timer);
+	tasklet_kill(&ttimer->tasklet);
+}
 
 /*
  * Autoprobing for irqs:

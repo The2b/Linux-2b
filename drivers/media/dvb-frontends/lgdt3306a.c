@@ -19,8 +19,9 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <asm/div64.h>
+#include <linux/kernel.h>
 #include <linux/dvb/frontend.h>
-#include "dvb_math.h"
+#include <media/dvb_math.h>
 #include "lgdt3306a.h"
 #include <linux/i2c-mux.h>
 
@@ -1767,7 +1768,13 @@ static void lgdt3306a_release(struct dvb_frontend *fe)
 	struct lgdt3306a_state *state = fe->demodulator_priv;
 
 	dbg_info("\n");
-	kfree(state);
+
+	/*
+	 * If state->muxc is not NULL, then we are an i2c device
+	 * and lgdt3306a_remove will clean up state
+	 */
+	if (!state->muxc)
+		kfree(state);
 }
 
 static const struct dvb_frontend_ops lgdt3306a_ops;
@@ -2072,7 +2079,7 @@ static const short regtab[] = {
 	0x30aa, /* MPEGLOCK */
 };
 
-#define numDumpRegs (sizeof(regtab)/sizeof(regtab[0]))
+#define numDumpRegs (ARRAY_SIZE(regtab))
 static u8 regval1[numDumpRegs] = {0, };
 static u8 regval2[numDumpRegs] = {0, };
 
@@ -2168,7 +2175,7 @@ static int lgdt3306a_probe(struct i2c_client *client,
 			sizeof(struct lgdt3306a_config));
 
 	config->i2c_addr = client->addr;
-	fe = lgdt3306a_attach(config, client->adapter);
+	fe = dvb_attach(lgdt3306a_attach, config, client->adapter);
 	if (fe == NULL) {
 		ret = -ENODEV;
 		goto err_fe;

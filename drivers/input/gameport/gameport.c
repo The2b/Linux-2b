@@ -91,13 +91,13 @@ static int gameport_measure_speed(struct gameport *gameport)
 	tx = ~0;
 
 	for (i = 0; i < 50; i++) {
-		local_irq_save_nort(flags);
+		local_irq_save(flags);
 		t1 = ktime_get_ns();
 		for (t = 0; t < 50; t++)
 			gameport_read(gameport);
 		t2 = ktime_get_ns();
 		t3 = ktime_get_ns();
-		local_irq_restore_nort(flags);
+		local_irq_restore(flags);
 		udelay(i * 10);
 		t = (t2 - t1) - (t3 - t2);
 		if (t < tx)
@@ -124,12 +124,12 @@ static int old_gameport_measure_speed(struct gameport *gameport)
 	tx = 1 << 30;
 
 	for(i = 0; i < 50; i++) {
-		local_irq_save_nort(flags);
+		local_irq_save(flags);
 		GET_TIME(t1);
 		for (t = 0; t < 50; t++) gameport_read(gameport);
 		GET_TIME(t2);
 		GET_TIME(t3);
-		local_irq_restore_nort(flags);
+		local_irq_restore(flags);
 		udelay(i * 10);
 		if ((t = DELTA(t2,t1) - DELTA(t3,t2)) < tx) tx = t;
 	}
@@ -148,11 +148,11 @@ static int old_gameport_measure_speed(struct gameport *gameport)
 	tx = 1 << 30;
 
 	for(i = 0; i < 50; i++) {
-		local_irq_save_nort(flags);
+		local_irq_save(flags);
 		t1 = rdtsc();
 		for (t = 0; t < 50; t++) gameport_read(gameport);
 		t2 = rdtsc();
-		local_irq_restore_nort(flags);
+		local_irq_restore(flags);
 		udelay(i * 10);
 		if (t2 - t1 < tx) tx = t2 - t1;
 	}
@@ -202,9 +202,9 @@ void gameport_stop_polling(struct gameport *gameport)
 }
 EXPORT_SYMBOL(gameport_stop_polling);
 
-static void gameport_run_poll_handler(unsigned long d)
+static void gameport_run_poll_handler(struct timer_list *t)
 {
-	struct gameport *gameport = (struct gameport *)d;
+	struct gameport *gameport = from_timer(gameport, t, poll_timer);
 
 	gameport->poll_handler(gameport);
 	if (gameport->poll_cnt)
@@ -542,8 +542,7 @@ static void gameport_init_port(struct gameport *gameport)
 
 	INIT_LIST_HEAD(&gameport->node);
 	spin_lock_init(&gameport->timer_lock);
-	setup_timer(&gameport->poll_timer, gameport_run_poll_handler,
-		    (unsigned long)gameport);
+	timer_setup(&gameport->poll_timer, gameport_run_poll_handler, 0);
 }
 
 /*
