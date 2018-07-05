@@ -76,7 +76,7 @@ struct task_struct init_task
 	.static_prio	= NICE_TO_PRIO(0),
 	.normal_prio	= NICE_TO_PRIO(0),
 	.rt_priority	= (MAX_RT_PRIO/2),
-	.policy		= SCHED_RR,
+	.policy		= SCHED_RR
 #endif
 	.cpus_ptr	= &init_task.cpus_mask,
 	.cpus_mask	= CPU_MASK_ALL,

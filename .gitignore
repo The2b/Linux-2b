@@ -39,6 +39,8 @@
 *.symtypes
 *.tar
 *.xz
+*.orig
+*.rej
 Module.symvers
 modules.builtin
 
